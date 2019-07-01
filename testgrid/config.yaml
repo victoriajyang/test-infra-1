@@ -2056,7 +2056,7 @@ test_groups:
 
  #CEL Conformance Tests
 - name: cel-conformance-tests
-  gcs_prefix: cel-conformance/test-groups
+  gcs_prefix: cel-conformance/test-logs
   open_test_template: # The URL template to visit after clicking on a cell
     url: 
   file_bug_template: # The URL template to visit when filing a bug
