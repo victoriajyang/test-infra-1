@@ -2054,7 +2054,20 @@ test_groups:
   gcs_prefix: kubernetes-jenkins/pr-logs/directory/pull-release-notes-test
   num_columns_recent: 30
 
-#
+ #CEL Conformance Tests
+- name: cel-conformance-tests
+  gcs_prefix: cel-conformance/test-groups
+  open_test_template: # The URL template to visit after clicking on a cell
+    url: 
+  file_bug_template: # The URL template to visit when filing a bug
+    url: https://github.com/google/cel-go
+  results_text: See these results on Google Cloud Storage # Text to show in the about menu as a link to another view of the results
+  results_url_template: # The URL template to visit after clicking
+    url: https://pantheon.corp.google.com/storage/browser/cel-conformance/
+  code_search_path: github.com/google/cel-go/search # URL for regression search links.
+  code_search_url_template: # The URL template to visit when searching for changelists
+    url: https://github.com/google/cel-go/compare/<start-custom-0>...<end-custom-0>
+
 # Start dashboards
 #
 
@@ -6656,6 +6669,9 @@ dashboards:
     base_options: width=10
 
 - name: sig-contribex-slack-infra
+
+- name: CEL
+  test_group_name: cel-go
 
 #
 # Start dashboard groups
