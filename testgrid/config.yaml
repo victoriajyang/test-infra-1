@@ -2055,7 +2055,7 @@ test_groups:
   num_columns_recent: 30
 
  #CEL Conformance Tests
-- name: cel-conformance-tests
+- name: cel-go-conformance-tests
   gcs_prefix: cel-conformance/test-logs
   open_test_template: # The URL template to visit after clicking on a cell
     url: 
@@ -6670,8 +6670,10 @@ dashboards:
 
 - name: sig-contribex-slack-infra
 
-- name: cel-conformance-tests
-  test_group_name: cel-go
+- name: google-cel-conformance
+  dashboard_tab:
+  - name: cel-go
+    test_group_name: cel-go-conformance-tests
 
 #
 # Start dashboard groups
