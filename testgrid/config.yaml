@@ -6670,7 +6670,7 @@ dashboards:
 
 - name: sig-contribex-slack-infra
 
-- name: google-cel-conformance
+- name: conformance-cel-tests
   dashboard_tab:
   - name: cel-go
     test_group_name: cel-go-conformance-tests
