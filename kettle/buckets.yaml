@@ -51,4 +51,4 @@ gs://k8s-conformance-docker:
   prefix: "docker:"
 gs://cel-conformance:
   contact: "victoriajyang"
-  prefix: ""
+  prefix: "cel:"
