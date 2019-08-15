@@ -746,6 +746,13 @@ func TestCreateRefs(t *testing.T) {
 }
 
 func TestSpecFromJobBase(t *testing.T) {
+	permittedGroups := []int{1234, 5678}
+	permittedUsers := []string{"authorized_user", "another_authorized_user"}
+	rerunAuthConfig := prowapi.RerunAuthConfig{
+		AllowAnyone:   false,
+		GitHubTeamIDs: permittedGroups,
+		GitHubUsers:   permittedUsers,
+	}
 	testCases := []struct {
 		name    string
 		jobBase config.JobBase
@@ -770,6 +777,24 @@ func TestSpecFromJobBase(t *testing.T) {
 				if pj.ReporterConfig.Slack.Channel != "my-channel" {
 					return fmt.Errorf("Expected pj.ReporterConfig.Slack.Channel to be \"my-channel\", was %q",
 						pj.ReporterConfig.Slack.Channel)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Verify rerun permissions gets copied",
+			jobBase: config.JobBase{
+				RerunAuthConfig: &rerunAuthConfig,
+			},
+			verify: func(pj prowapi.ProwJobSpec) error {
+				if pj.RerunAuthConfig.AllowAnyone {
+					return errors.New("Expected RerunAuthConfig.AllowAnyone to be false")
+				}
+				if pj.RerunAuthConfig.GitHubTeamIDs == nil {
+					return errors.New("Expected RerunAuthConfig.GitHubTeamIDs to be non-nil")
+				}
+				if pj.RerunAuthConfig.GitHubUsers == nil {
+					return errors.New("Expected RerunAuthConfig.GitHubUsers to be non-nil")
 				}
 				return nil
 			},

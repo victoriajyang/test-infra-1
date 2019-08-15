@@ -27,6 +27,7 @@ import (
 	"time"
 
 	buildv1alpha1 "github.com/knative/build/pkg/apis/build/v1alpha1"
+	pipelinev1alpha1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 
@@ -455,10 +456,11 @@ func TestValidateAgent(t *testing.T) {
 		pass bool
 	}{
 		{
-			name: "reject unknown agent",
+			name: "accept unknown agent",
 			base: func(j *JobBase) {
 				j.Agent = "random-agent"
 			},
+			pass: true,
 		},
 		{
 			name: "spec requires kubernetes agent",
@@ -735,6 +737,141 @@ func TestValidatePodSpec(t *testing.T) {
 	}
 }
 
+func TestValidatePipelineRunSpec(t *testing.T) {
+	cases := []struct {
+		name      string
+		jobType   prowapi.ProwJobType
+		spec      func(s *pipelinev1alpha1.PipelineRunSpec)
+		extraRefs []prowapi.Refs
+		noSpec    bool
+		pass      bool
+	}{
+		{
+			name:   "allow nil spec",
+			noSpec: true,
+			pass:   true,
+		},
+		{
+			name: "happy case",
+			pass: true,
+		},
+		{
+			name:    "reject implicit ref for periodic",
+			jobType: prowapi.PeriodicJob,
+			spec: func(s *pipelinev1alpha1.PipelineRunSpec) {
+				s.Resources = append(s.Resources, pipelinev1alpha1.PipelineResourceBinding{
+					Name:        "git ref",
+					ResourceRef: pipelinev1alpha1.PipelineResourceRef{Name: "PROW_IMPLICIT_GIT_REF"},
+				})
+			},
+			pass: false,
+		},
+		{
+			name:    "allow implicit ref for presubmit",
+			jobType: prowapi.PresubmitJob,
+			spec: func(s *pipelinev1alpha1.PipelineRunSpec) {
+				s.Resources = append(s.Resources, pipelinev1alpha1.PipelineResourceBinding{
+					Name:        "git ref",
+					ResourceRef: pipelinev1alpha1.PipelineResourceRef{Name: "PROW_IMPLICIT_GIT_REF"},
+				})
+			},
+			pass: true,
+		},
+		{
+			name:    "allow implicit ref for postsubmit",
+			jobType: prowapi.PostsubmitJob,
+			spec: func(s *pipelinev1alpha1.PipelineRunSpec) {
+				s.Resources = append(s.Resources, pipelinev1alpha1.PipelineResourceBinding{
+					Name:        "git ref",
+					ResourceRef: pipelinev1alpha1.PipelineResourceRef{Name: "PROW_IMPLICIT_GIT_REF"},
+				})
+			},
+			pass: true,
+		},
+		{
+			name: "reject extra refs usage with no extra refs",
+			spec: func(s *pipelinev1alpha1.PipelineRunSpec) {
+				s.Resources = append(s.Resources, pipelinev1alpha1.PipelineResourceBinding{
+					Name:        "git ref",
+					ResourceRef: pipelinev1alpha1.PipelineResourceRef{Name: "PROW_EXTRA_GIT_REF_0"},
+				})
+			},
+			pass: false,
+		},
+		{
+			name: "allow extra refs usage with extra refs",
+			spec: func(s *pipelinev1alpha1.PipelineRunSpec) {
+				s.Resources = append(s.Resources, pipelinev1alpha1.PipelineResourceBinding{
+					Name:        "git ref",
+					ResourceRef: pipelinev1alpha1.PipelineResourceRef{Name: "PROW_EXTRA_GIT_REF_0"},
+				})
+			},
+			extraRefs: []prowapi.Refs{{Org: "o", Repo: "r"}},
+			pass:      true,
+		},
+		{
+			name: "reject wrong extra refs index usage",
+			spec: func(s *pipelinev1alpha1.PipelineRunSpec) {
+				s.Resources = append(s.Resources, pipelinev1alpha1.PipelineResourceBinding{
+					Name:        "git ref",
+					ResourceRef: pipelinev1alpha1.PipelineResourceRef{Name: "PROW_EXTRA_GIT_REF_1"},
+				})
+			},
+			extraRefs: []prowapi.Refs{{Org: "o", Repo: "r"}},
+			pass:      false,
+		},
+		{
+			name:      "reject extra refs without usage",
+			extraRefs: []prowapi.Refs{{Org: "o", Repo: "r"}},
+			pass:      false,
+		},
+		{
+			name: "allow unrelated resource refs",
+			spec: func(s *pipelinev1alpha1.PipelineRunSpec) {
+				s.Resources = append(s.Resources, pipelinev1alpha1.PipelineResourceBinding{
+					Name:        "git ref",
+					ResourceRef: pipelinev1alpha1.PipelineResourceRef{Name: "some-other-ref"},
+				})
+			},
+			pass: true,
+		},
+		{
+			name: "reject leading zeros when extra ref usage is otherwise valid",
+			spec: func(s *pipelinev1alpha1.PipelineRunSpec) {
+				s.Resources = append(s.Resources, pipelinev1alpha1.PipelineResourceBinding{
+					Name:        "git ref",
+					ResourceRef: pipelinev1alpha1.PipelineResourceRef{Name: "PROW_EXTRA_GIT_REF_000"},
+				})
+			},
+			extraRefs: []prowapi.Refs{{Org: "o", Repo: "r"}},
+			pass:      false,
+		},
+	}
+
+	spec := pipelinev1alpha1.PipelineRunSpec{}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			jt := prowapi.PresubmitJob
+			if tc.jobType != "" {
+				jt = tc.jobType
+			}
+			current := spec.DeepCopy()
+			if tc.noSpec {
+				current = nil
+			} else if tc.spec != nil {
+				tc.spec(current)
+			}
+			switch err := ValidatePipelineRunSpec(jt, tc.extraRefs, current); {
+			case err == nil && !tc.pass:
+				t.Error("validation failed to raise an error")
+			case err != nil && tc.pass:
+				t.Errorf("validation should have passed, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateDecoration(t *testing.T) {
 	defCfg := prowapi.DecorationConfig{
 		UtilityImages: &prowjobv1.UtilityImages{
@@ -957,6 +1094,16 @@ func TestValidateJobBase(t *testing.T) {
 				Namespace: &ns,
 			},
 			pass: true,
+		},
+		{
+			name: "invalid rerun_permissions",
+			base: JobBase{
+				RerunAuthConfig: &prowapi.RerunAuthConfig{
+					AllowAnyone: true,
+					GitHubUsers: []string{"user"},
+				},
+			},
+			pass: false,
 		},
 	}
 
@@ -1819,9 +1966,9 @@ func TestValidGitHubReportType(t *testing.T) {
 		expectTypes []prowapi.ProwJobType
 	}{
 		{
-			name:        "empty config should default to report for presubmit only",
+			name:        "empty config should default to report for both presubmit and postsubmit",
 			prowConfig:  ``,
-			expectTypes: []prowapi.ProwJobType{prowapi.PresubmitJob},
+			expectTypes: []prowapi.ProwJobType{prowapi.PresubmitJob, prowapi.PostsubmitJob},
 		},
 		{
 			name: "reject unsupported job types",
@@ -1885,7 +2032,7 @@ func TestValidRerunAuthConfig(t *testing.T) {
 deck:
   rerun_auth_config:
     allow_anyone: false
-    authorized_users:
+    github_users:
     - someperson
     - someotherperson
 `,
@@ -1897,7 +2044,7 @@ deck:
 deck:
   rerun_auth_config:
     allow_anyone: true
-    authorized_users:
+    github_users:
     - someperson
     - anotherperson
 `,
@@ -1917,7 +2064,7 @@ deck:
 deck:
   rerun_auth_config:
     allow_anyone: true
-    authorized_users:
+    github_users:
 `,
 			expectError: false,
 		},

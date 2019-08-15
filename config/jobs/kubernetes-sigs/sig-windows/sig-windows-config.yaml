@@ -49,7 +49,7 @@ presubmits:
       preset-dind-enabled: "true"
     spec:
       containers:
-      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
         args:
         - "--job=$(JOB_NAME)"
         - "--root=/go/src"
@@ -82,8 +82,11 @@ presubmits:
         - "--timeout=450m"
         securityContext:
           privileged: true
-
-
+    annotations:
+      testgrid-dashboards: sig-windows
+      testgrid-tab-name: aks-engine-azure-windows-presubmit
+      description: Presubmit job for Windows tests on k8s clusters provided by aks-engine (https://github.com/Azure/aks-engine) on Azure cloud"
+      testgrid-num-columns-recent: '30'
 periodics:
 - interval: 6h
   name: ci-kubernetes-e2e-aks-engine-azure-master-windows
@@ -94,7 +97,7 @@ periodics:
     preset-dind-enabled: "true"
   spec:
     containers:
-    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
       args:
       - "--job=$(JOB_NAME)"
       - "--root=/go/src"
@@ -120,11 +123,14 @@ periodics:
       - "--acsengine-win-binaries"
       - "--acsengine-hyperkube"
       - "--acsengine-agentpoolcount=2"
-      - "--test_args=--ginkgo.flakeAttempts=2 --num-nodes=2 --node-os-distro=windows --ginkgo.focus=\\[Conformance\\]|\\[NodeConformance\\]|\\[sig-windows\\]|\\[sig-apps\\].CronJob|\\[sig-api-machinery\\].ResourceQuota|\\[sig-scheduling\\].SchedulerPreemption --ginkgo.skip=\\[LinuxOnly\\]|GMSA"
+      - "--test_args=--ginkgo.flakeAttempts=2 --num-nodes=2 --node-os-distro=windows --ginkgo.focus=\\[Conformance\\]|\\[NodeConformance\\]|\\[sig-windows\\]|\\[sig-apps\\].CronJob|\\[sig-api-machinery\\].ResourceQuota|\\[sig-scheduling\\].SchedulerPreemption --ginkgo.skip=\\[LinuxOnly\\]|GMSA|Kubectl.logs.should.be.able.to.retrieve.and.filter.logs|Guestbook.application.should.create.and.stop.a.working.application"
       - "--timeout=620m"
       securityContext:
         privileged: true
-
+  annotations:
+    testgrid-dashboards: sig-windows
+    testgrid-tab-name: aks-engine-azure-windows-master
+    description: Runs SIG-Windows release tests on K8s clusters provided by aks-engine (https://github.com/Azure/aks-engine) on Azure cloud"
 - interval: 12h
   name: ci-kubernetes-e2e-aks-engine-azure-1-14-windows
   labels:
@@ -134,7 +140,7 @@ periodics:
     preset-dind-enabled: "true"
   spec:
     containers:
-    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
       args:
       - "--job=$(JOB_NAME)"
       - "--root=/go/src"
@@ -164,7 +170,10 @@ periodics:
       - "--timeout=620m"
       securityContext:
         privileged: true
-
+  annotations:
+    testgrid-dashboards: sig-release-1.14-all, sig-windows
+    testgrid-tab-name: aks-engine-azure-1-14-windows
+    description: Release tests for K8s 1.14 on Clusters with Windows nodes provided by aks-engine on Azure cloud.
 - interval: 6h
   name: ci-kubernetes-e2e-aks-engine-azure-1-15-windows
   labels:
@@ -174,7 +183,7 @@ periodics:
     preset-dind-enabled: "true"
   spec:
     containers:
-    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
       args:
       - "--job=$(JOB_NAME)"
       - "--root=/go/src"
@@ -204,7 +213,10 @@ periodics:
       - "--timeout=620m"
       securityContext:
         privileged: true
-
+  annotations:
+    testgrid-dashboards: sig-release-1.15-all, sig-windows
+    testgrid-tab-name: aks-engine-azure-1-15-windows
+    description: Release tests for K8s 1.15 on Clusters with Windows nodes provided by aks-engine on Azure cloud.
 - interval: 3h
   name: ci-kubernetes-e2e-aks-engine-azure-master-staging-windows
   labels:
@@ -214,7 +226,7 @@ periodics:
     preset-dind-enabled: "true"
   spec:
     containers:
-    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
       args:
       - "--job=$(JOB_NAME)"
       - "--root=/go/src"
@@ -229,7 +241,8 @@ periodics:
       - "--deployment=acsengine"
       - "--provider=skeleton"
       - "--build=bazel"
-      - "--ginkgo-parallel=4"
+      - "--ginkgo-parallel=8"
+      - "--acsengine-location=westus2"
       - "--acsengine-admin-username=azureuser"
       - "--acsengine-admin-password=AdminPassw0rd"
       - "--acsengine-creds=$AZURE_CREDENTIALS"
@@ -239,8 +252,12 @@ periodics:
       - "--acsengine-template-url=https://raw.githubusercontent.com/kubernetes-sigs/windows-testing/master/job-templates/kubernetes_release_staging.json"
       - "--acsengine-win-binaries"
       - "--acsengine-hyperkube"
-      - "--acsengine-agentpoolcount=2"
-      - "--test_args=--ginkgo.flakeAttempts=2 --num-nodes=2 --node-os-distro=windows --ginkgo.focus=\\[Conformance\\]|\\[NodeConformance\\]|\\[sig-windows\\]|\\[sig-apps\\].CronJob|\\[sig-api-machinery\\].ResourceQuota|\\[sig-scheduling\\].SchedulerPreemption --ginkgo.skip=\\[LinuxOnly\\]|GMSA|\\[Serial\\]"
+      - "--acsengine-agentpoolcount=3"
+      - "--test_args=--ginkgo.flakeAttempts=2 --num-nodes=3 --node-os-distro=windows --ginkgo.focus=\\[Conformance\\]|\\[NodeConformance\\]|\\[sig-windows\\]|\\[sig-apps\\].CronJob|\\[sig-api-machinery\\].ResourceQuota|\\[sig-scheduling\\].SchedulerPreemption --ginkgo.skip=\\[LinuxOnly\\]|GMSA|\\[Serial\\]|Kubectl.logs.should.be.able.to.retrieve.and.filter.logs|Guestbook.application.should.create.and.stop.a.working.application"
       - "--timeout=450m"
       securityContext:
         privileged: true
+  annotations:
+    testgrid-dashboards: sig-windows
+    testgrid-tab-name: aks-engine-azure-windows-master-staging
+    description: Staging job for new Windows tests on a Kubernetes cluster provided by aks-engine (https://github.com/Azure/aks-engine) on Azure cloud"

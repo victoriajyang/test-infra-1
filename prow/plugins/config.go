@@ -52,28 +52,31 @@ type Configuration struct {
 	Owners Owners `json:"owners,omitempty"`
 
 	// Built-in plugins specific configuration.
-	Approve                    []Approve              `json:"approve,omitempty"`
-	UseDeprecatedSelfApprove   bool                   `json:"use_deprecated_2018_implicit_self_approve_default_migrate_before_july_2019,omitempty"`
-	UseDeprecatedReviewApprove bool                   `json:"use_deprecated_2018_review_acts_as_approve_default_migrate_before_july_2019,omitempty"`
-	Blockades                  []Blockade             `json:"blockades,omitempty"`
-	Blunderbuss                Blunderbuss            `json:"blunderbuss,omitempty"`
-	Bugzilla                   Bugzilla               `json:"bugzilla"`
-	Cat                        Cat                    `json:"cat,omitempty"`
-	CherryPickUnapproved       CherryPickUnapproved   `json:"cherry_pick_unapproved,omitempty"`
-	ConfigUpdater              ConfigUpdater          `json:"config_updater,omitempty"`
-	Golint                     Golint                 `json:"golint"`
-	Heart                      Heart                  `json:"heart,omitempty"`
-	Label                      Label                  `json:"label"`
-	Lgtm                       []Lgtm                 `json:"lgtm,omitempty"`
-	RepoMilestone              map[string]Milestone   `json:"repo_milestone,omitempty"`
-	Project                    ProjectConfig          `json:"project_config,omitempty"`
-	RequireMatchingLabel       []RequireMatchingLabel `json:"require_matching_label,omitempty"`
-	RequireSIG                 RequireSIG             `json:"requiresig,omitempty"`
-	Slack                      Slack                  `json:"slack,omitempty"`
-	SigMention                 SigMention             `json:"sigmention,omitempty"`
-	Size                       Size                   `json:"size"`
-	Triggers                   []Trigger              `json:"triggers,omitempty"`
-	Welcome                    []Welcome              `json:"welcome,omitempty"`
+	Approve                    []Approve                    `json:"approve,omitempty"`
+	UseDeprecatedSelfApprove   bool                         `json:"use_deprecated_2018_implicit_self_approve_default_migrate_before_july_2019,omitempty"`
+	UseDeprecatedReviewApprove bool                         `json:"use_deprecated_2018_review_acts_as_approve_default_migrate_before_july_2019,omitempty"`
+	Blockades                  []Blockade                   `json:"blockades,omitempty"`
+	Blunderbuss                Blunderbuss                  `json:"blunderbuss,omitempty"`
+	Bugzilla                   Bugzilla                     `json:"bugzilla"`
+	Cat                        Cat                          `json:"cat,omitempty"`
+	CherryPickUnapproved       CherryPickUnapproved         `json:"cherry_pick_unapproved,omitempty"`
+	ConfigUpdater              ConfigUpdater                `json:"config_updater,omitempty"`
+	Dco                        map[string]*Dco              `json:"dco,omitempty"`
+	Golint                     Golint                       `json:"golint"`
+	Heart                      Heart                        `json:"heart,omitempty"`
+	Label                      Label                        `json:"label"`
+	Lgtm                       []Lgtm                       `json:"lgtm,omitempty"`
+	MilestoneApplier           map[string]BranchToMilestone `json:"milestone_applier,omitempty"`
+	RepoMilestone              map[string]Milestone         `json:"repo_milestone,omitempty"`
+	Project                    ProjectConfig                `json:"project_config,omitempty"`
+	RequireMatchingLabel       []RequireMatchingLabel       `json:"require_matching_label,omitempty"`
+	RequireSIG                 RequireSIG                   `json:"requiresig,omitempty"`
+	Retitle                    Retitle                      `json:"retitle,omitempty"`
+	Slack                      Slack                        `json:"slack,omitempty"`
+	SigMention                 SigMention                   `json:"sigmention,omitempty"`
+	Size                       Size                         `json:"size"`
+	Triggers                   []Trigger                    `json:"triggers,omitempty"`
+	Welcome                    []Welcome                    `json:"welcome,omitempty"`
 }
 
 // Golint holds configuration for the golint plugin
@@ -180,6 +183,12 @@ func (c *Configuration) SkipCollaborators(org, repo string) bool {
 type RequireSIG struct {
 	// GroupListURL is the URL where a list of the available SIGs can be found.
 	GroupListURL string `json:"group_list_url,omitempty"`
+}
+
+// Retitle specifies configuration for the retitle plugin.
+type Retitle struct {
+	// AllowClosedIssues allows retitling closed/merged issues and PRs.
+	AllowClosedIssues bool `json:"allow_closed_issues,omitempty"`
 }
 
 // SigMention specifies configuration for the sigmention plugin.
@@ -364,6 +373,10 @@ type Milestone struct {
 	MaintainersFriendlyName string `json:"maintainers_friendly_name,omitempty"`
 }
 
+// BranchToMilestone is a map of the branch name to the configured milestone for that branch.
+// This is used by the milestoneapplier plugin.
+type BranchToMilestone map[string]string
+
 // Slack contains the configuration for the slack plugin.
 type Slack struct {
 	MentionChannels []string       `json:"mentionchannels,omitempty"`
@@ -464,6 +477,17 @@ type Welcome struct {
 	// MessageTemplate is the welcome message template to post on new-contributor PRs
 	// For the info struct see prow/plugins/welcome/welcome.go's PRInfo
 	MessageTemplate string `json:"message_template,omitempty"`
+}
+
+// Dco is config for the DCO (https://developercertificate.org/) checker plugin.
+type Dco struct {
+	// SkipDCOCheckForMembers is used to skip DCO check for trusted org members
+	SkipDCOCheckForMembers bool `json:"skip_dco_check_for_members,omitempty"`
+	// TrustedOrg is the org whose members' commits will not be checked for DCO signoff
+	// if the skip DCO option is enabled. The default is the PR's org.
+	TrustedOrg string `json:"trusted_org,omitempty"`
+	// SkipDCOCheckForCollaborators is used to skip DCO check for trusted org members
+	SkipDCOCheckForCollaborators bool `json:"skip_dco_check_for_collaborators,omitempty"`
 }
 
 // CherryPickUnapproved is the config for the cherrypick-unapproved plugin.
@@ -621,6 +645,22 @@ func (c *Configuration) TriggerFor(org, repo string) Trigger {
 	return Trigger{}
 }
 
+// DcoFor finds the Dco for a repo, if one exists
+// a Dco can be listed for the repo itself or for the
+// owning organization
+func (c *Configuration) DcoFor(org, repo string) *Dco {
+	if c.Dco[fmt.Sprintf("%s/%s", org, repo)] != nil {
+		return c.Dco[fmt.Sprintf("%s/%s", org, repo)]
+	}
+	if c.Dco[org] != nil {
+		return c.Dco[org]
+	}
+	if c.Dco["*"] != nil {
+		return c.Dco["*"]
+	}
+	return &Dco{}
+}
+
 // EnabledReposForPlugin returns the orgs and repos that have enabled the passed plugin.
 func (c *Configuration) EnabledReposForPlugin(plugin string) (orgs, repos []string) {
 	for repo, plugins := range c.Plugins {
@@ -735,7 +775,7 @@ func (c *Configuration) setDefaults() {
 
 To approve the cherry-pick, please ping the *kubernetes/patch-release-team* in a comment when ready.
 
-See also [Kuberentes Patch Releases](https://github.com/kubernetes/sig-release/blob/master/releases/patch-releases.md)`
+See also [Kubernetes Patch Releases](https://github.com/kubernetes/sig-release/blob/master/releases/patch-releases.md)`
 	}
 
 	for i, rml := range c.RequireMatchingLabel {
@@ -1011,12 +1051,22 @@ type BugzillaRepoOptions struct {
 
 // BugzillaBranchOptions describes how to check if a Bugzilla bug is valid or not.
 type BugzillaBranchOptions struct {
+	// ValidateByDefault determines whether a validation check is run for all pull
+	// requests by default
+	ValidateByDefault *bool `json:"validate_by_default,omitempty"`
+
 	// IsOpen determines whether a bug needs to be open to be valid
 	IsOpen *bool `json:"is_open,omitempty"`
 	// TargetRelease determines which release a bug needs to target to be valid
 	TargetRelease *string `json:"target_release,omitempty"`
 	// Statuses determine which statuses a bug may have to be valid
 	Statuses *[]string `json:"statuses,omitempty"`
+
+	// DependentBugStatuses determine which statuses a bug's dependent bugs may have
+	// to deem the child bug valid
+	DependentBugStatuses *[]string `json:"dependent_bug_statuses,omitempty"`
+	// DependentBugTargetRelease determines which release a bug's dependent bugs need to target to be valid
+	DependentBugTargetRelease *string `json:"dependent_bug_target_release,omitempty"`
 
 	// StatusAfterValidation is the status which the bug will be moved to after being
 	// deemed valid and linked to a PR. Will implicitly be considered a part of `statuses`
@@ -1025,20 +1075,29 @@ type BugzillaBranchOptions struct {
 	// AddExternalLink determines whether the pull request will be added to the Bugzilla
 	// bug using the ExternalBug tracker API after being validated
 	AddExternalLink *bool `json:"add_external_link,omitempty"`
+	// StatusAfterMerge is the status which the bug will be moved to after all pull requests
+	// in the external bug tracker have been merged.
+	StatusAfterMerge *string `json:"status_after_merge,omitempty"`
 }
 
 func (o BugzillaBranchOptions) matches(other BugzillaBranchOptions) bool {
+	validateByDefaultMatch := o.ValidateByDefault == nil && other.ValidateByDefault == nil ||
+		(o.ValidateByDefault != nil && other.ValidateByDefault != nil && *o.ValidateByDefault == *other.ValidateByDefault)
 	isOpenMatch := o.IsOpen == nil && other.IsOpen == nil ||
 		(o.IsOpen != nil && other.IsOpen != nil && *o.IsOpen == *other.IsOpen)
 	targetReleaseMatch := o.TargetRelease == nil && other.TargetRelease == nil ||
 		(o.TargetRelease != nil && other.TargetRelease != nil && *o.TargetRelease == *other.TargetRelease)
 	statusesMatch := o.Statuses == nil && other.Statuses == nil ||
 		(o.Statuses != nil && other.Statuses != nil && sets.NewString(*o.Statuses...).Equal(sets.NewString(*other.Statuses...)))
+	dependentBugStatusesMatch := o.DependentBugStatuses == nil && other.DependentBugStatuses == nil ||
+		(o.DependentBugStatuses != nil && other.DependentBugStatuses != nil && sets.NewString(*o.DependentBugStatuses...).Equal(sets.NewString(*other.DependentBugStatuses...)))
 	statusesAfterValidationMatch := o.StatusAfterValidation == nil && other.StatusAfterValidation == nil ||
 		(o.StatusAfterValidation != nil && other.StatusAfterValidation != nil && *o.StatusAfterValidation == *other.StatusAfterValidation)
 	addExternalLinkMatch := o.AddExternalLink == nil && other.AddExternalLink == nil ||
 		(o.AddExternalLink != nil && other.AddExternalLink != nil && *o.AddExternalLink == *other.AddExternalLink)
-	return isOpenMatch && targetReleaseMatch && statusesMatch && statusesAfterValidationMatch && addExternalLinkMatch
+	statusAfterMergeMatch := o.StatusAfterMerge == nil && other.StatusAfterMerge == nil ||
+		(o.StatusAfterMerge != nil && other.StatusAfterMerge != nil && *o.StatusAfterMerge == *other.StatusAfterMerge)
+	return validateByDefaultMatch && isOpenMatch && targetReleaseMatch && statusesMatch && dependentBugStatusesMatch && statusesAfterValidationMatch && addExternalLinkMatch && statusAfterMergeMatch
 }
 
 const BugzillaOptionsWildcard = `*`
@@ -1056,6 +1115,9 @@ func ResolveBugzillaOptions(parent, child BugzillaBranchOptions) BugzillaBranchO
 	output := BugzillaBranchOptions{}
 
 	// populate with the parent
+	if parent.ValidateByDefault != nil {
+		output.ValidateByDefault = parent.ValidateByDefault
+	}
 	if parent.IsOpen != nil {
 		output.IsOpen = parent.IsOpen
 	}
@@ -1065,14 +1127,23 @@ func ResolveBugzillaOptions(parent, child BugzillaBranchOptions) BugzillaBranchO
 	if parent.Statuses != nil {
 		output.Statuses = parent.Statuses
 	}
+	if parent.DependentBugStatuses != nil {
+		output.DependentBugStatuses = parent.DependentBugStatuses
+	}
 	if parent.StatusAfterValidation != nil {
 		output.StatusAfterValidation = parent.StatusAfterValidation
 	}
 	if parent.AddExternalLink != nil {
 		output.AddExternalLink = parent.AddExternalLink
 	}
+	if parent.StatusAfterMerge != nil {
+		output.StatusAfterMerge = parent.StatusAfterMerge
+	}
 
 	//override with the child
+	if child.ValidateByDefault != nil {
+		output.ValidateByDefault = child.ValidateByDefault
+	}
 	if child.IsOpen != nil {
 		output.IsOpen = child.IsOpen
 	}
@@ -1082,11 +1153,17 @@ func ResolveBugzillaOptions(parent, child BugzillaBranchOptions) BugzillaBranchO
 	if child.Statuses != nil {
 		output.Statuses = child.Statuses
 	}
+	if child.DependentBugStatuses != nil {
+		output.DependentBugStatuses = child.DependentBugStatuses
+	}
 	if child.StatusAfterValidation != nil {
 		output.StatusAfterValidation = child.StatusAfterValidation
 	}
 	if child.AddExternalLink != nil {
 		output.AddExternalLink = child.AddExternalLink
+	}
+	if child.StatusAfterMerge != nil {
+		output.StatusAfterMerge = child.StatusAfterMerge
 	}
 
 	return output

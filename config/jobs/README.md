@@ -67,15 +67,20 @@ files here. eg:
 ## Job Examples
 
 A presubmit job named "pull-community-verify" that will run against all PRs to
-kuberentes/community's master branch. It will run `make verify` in a checkout
+kubernetes/community's master branch. It will run `make verify` in a checkout
 of kubernetes/community at the PR's HEAD. It will report back to the PR via a
 status context named `pull-kubernetes-community`. Its logs and results are going
-to end up in GCS under `kubernetes-jenkins/pr-logs/pull/community`.
+to end up in GCS under `kubernetes-jenkins/pr-logs/pull/community`. Historical
+results will display in testgrid on the `sig-contribex-community` dashboard
+under the `pull-verify` tab
 
 ```yaml
 presubmits:
   kubernetes/community:
   - name: pull-community-verify  # convention: (job type)-(repo name)-(suite name)
+    annotations:
+      testgrid-dashboards: sig-contribex-community
+      testgrid-tab-name: pull-verify
     branches:
     - master
     decorate: true
@@ -96,7 +101,10 @@ run every 4 hours against kubernetes-sigs/cluster-api-provider-aws's master
 branch. It will run `./scripts/ci-aws-cred-test.sh` in a checkout of the repo
 located at `sigs.k8s.io/cluster-api-provider-aws`. The presets it's using will
 ensure it has aws credentials and aws ssh keys in well known locations. Its
-logs and results are going to end up in GCS under `kubernetes-jenkins/logs/periodic-cluster-api-provider-aws-test-creds`.
+logs and results are going to end up in GCS under 
+`kubernetes-jenkins/logs/periodic-cluster-api-provider-aws-test-creds`.
+Historical results will display in testgrid on the `sig-cluster-lifecycle-cluster-api-provider-aws`
+dashboard under the `test-creds` tab
 
 It's using the `kubekins-e2e` image which [isn't recommended](#job-images),
 but works for now.
@@ -104,6 +112,9 @@ but works for now.
 ```yaml
 periodics:
 - name: periodic-cluster-api-provider-aws-test-creds
+  annotations:
+    testgrid-dashboards: sig-cluster-lifecycle-cluster-api-provider-aws
+    testgrid-tab-name: test-creds
   decorate: true
   interval: 4h
   labels:
@@ -131,9 +142,8 @@ periodics:
 1. Ensure an [`OWNERS`](https://go.k8s.io/owners) file exists in the directory for job, and has appropriate approvers/reviewers
 1. Write or edit the job config (please see [how-to-add-new-jobs](/prow/jobs.md#how-to-configure-new-jobs))
 1. Ensure the job is configured to to display its results in [testgrid.k8s.io]
-    - The new way: add [testgrid annotations]
-    - The old way: update [`testgrid/config.yaml`]
-    - Please see the [testgrid README](/testgrid/README.md) for more details on configuation options
+    - The simple way: add [testgrid annotations]
+    - Please see the testgrid [documentation](/testgrid/config.md) for more details on configuation options
 1. Ensure any necessary formatting or config generation happens
     - Run [`hack/update-config.sh`]
     - CI will fail against your PR if this was necessary
@@ -201,13 +211,12 @@ bazel run //experiment/config-forker -- \
 
 [prow.k8s.io]: https://prow.k8s.io
 [@k8s-ci-robot]: https://github.com/k8s-ci-robot
-[testgrid annotations]: /testgrid/config.md#minimal-configuration
+[testgrid annotations]: /testgrid/config.md#prow-job-configuration
 [testgrid.k8s.io]: https://testgrid.k8s.io
 
 [`experiment/config-forker`]: /experiment/config-forker
 [`hack/update-config.sh`]: /hack/update-config.sh
 [`images/`]: /images
-[`testgrid/config.yaml`]: /testgrid/config.yaml
 
 [periodic-kubernetes-e2e-packages-pushed]: https://github.com/kubernetes/test-infra/blob/688d365adf7f71e33a4249c7b90d7e84c105dfc5/config/jobs/kubernetes/sig-cluster-lifecycle/packages.yaml#L3-L16
 [pull-community-verify]: https://github.com/kubernetes/test-infra/blob/f4e6553b27d9ee8b35b2f2e588ea2e18c3fa818b/config/jobs/kubernetes/community/community-presubmit.yaml#L3-L19

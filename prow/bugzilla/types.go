@@ -22,7 +22,7 @@ type Bug struct {
 	// ActualTime is the total number of hours that this bug has taken so far. If you are not in the time-tracking group, this field will not be included in the return value.
 	ActualTime int `json:"actual_time,omitempty"`
 	// Alias is the unique aliases of this bug. An empty array will be returned if this bug has no aliases.
-	Alias []int `json:"alias,omitempty"`
+	Alias []string `json:"alias,omitempty"`
 	// AssignedTo is the login name of the user to whom the bug is assigned.
 	AssignedTo string `json:"assigned_to,omitempty"`
 	// AssignedToDetail is an object containing detailed user information for the assigned_to. To see the keys included in the user detail object, see below.
@@ -150,12 +150,21 @@ type BugUpdate struct {
 // See API documentation at:
 // https://bugzilla.redhat.com/docs/en/html/integrating/api/Bugzilla/Extension/ExternalBugs/WebService.html
 type ExternalBug struct {
-	// TrackerID is an internal field to the Bugzilla server identifying the tracker
-	TrackerID int `json:"ext_bz_id"`
+	// Type holds more metadata for the external bug tracker
+	Type ExternalBugType `json:"type"`
 	// BugzillaBugID is the ID of the Bugzilla bug this external bug is linked to
 	BugzillaBugID int `json:"bug_id"`
 	// ExternalBugID is a unique identifier for the bug under the tracker
 	ExternalBugID string `json:"ext_bz_bug_id"`
+	// The following fields are parsed from the external bug identifier
+	Org, Repo string
+	Num       int
+}
+
+// ExternalBugType holds identifying metadata for a tracker
+type ExternalBugType struct {
+	// URL is the identifying URL for this tracker
+	URL string `json:"url"`
 }
 
 // AddExternalBugParameters are the parameters required to add an external

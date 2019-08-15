@@ -1,19 +1,15 @@
 import moment from "moment";
 import {Job, JobState, JobType} from "../api/prow";
 import {cell, getCookieByName, icon} from "../common/common";
+import {getParameterByName} from "../common/urls";
 import {FuzzySearch} from './fuzzy-search';
 import {JobHistogram, JobSample} from './histogram';
 
 declare const allBuilds: Job[];
 declare const spyglass: boolean;
 declare const rerunCreatesJob: boolean;
-
-// http://stackoverflow.com/a/5158301/3694
-function getParameterByName(name: string): string | null {
-    const match = RegExp(`[?&]${name}=([^&/]*)`).exec(
-        window.location.search);
-    return match && decodeURIComponent(match[1].replace(/\+/g, ' '));
-}
+declare const csrfToken: string;
+declare const allowAnyone: boolean;
 
 function shortenBuildRefs(buildRef: string): string {
     return buildRef && buildRef.replace(/:[0-9a-f]*/g, '');
@@ -360,7 +356,7 @@ function addOptionFuzzySearch(fz: FuzzySearch, data: string[], id: string,
     }
 }
 
-function addOptions(options: string[], selectID: string): string | null {
+function addOptions(options: string[], selectID: string): string | undefined {
     const sel = document.getElementById(selectID)! as HTMLSelectElement;
     while (sel.length > 1) {
         sel.removeChild(sel.lastChild!);
@@ -650,17 +646,19 @@ function redraw(fz: FuzzySearch): void {
         max = 2 * 3600;
     }
     drawJobHistogram(totalJob, jobHistogram, now - (12 * 3600), now, max);
-    if (rerunStatus != null) {
+    if (rerunStatus === "gh_redirect") {
         modal.style.display = "block";
-        rerunCommand.innerHTML = `Nice try! The direct rerun feature hasn't been implemented yet, so that button does nothing.`;
+        rerunCommand.innerHTML = "Rerunning that job requires GitHub login. Now that you're logged in, try again";
     }
-
 }
 
 function createRerunCell(modal: HTMLElement, rerunElement: HTMLElement, prowjob: string): HTMLTableDataCellElement {
     const url = `${location.protocol}//${location.host}/rerun?prowjob=${prowjob}`;
     const c = document.createElement("td");
     const i = icon.create("refresh", "Show instructions for rerunning this job");
+
+    // we actually want to know whether the "access-token-session" cookie exists, but we can't always
+    // access it from the frontend. "github_login" should be set whenever "access-token-session" is
     const login = getCookieByName("github_login");
     i.onclick = () => {
         modal.style.display = "block";
@@ -670,25 +668,34 @@ function createRerunCell(modal: HTMLElement, rerunElement: HTMLElement, prowjob:
         copyButton.onclick = () => copyToClipboardWithToast(`kubectl create -f "${url}"`);
         copyButton.innerHTML = "<i class='material-icons state triggered' style='color: gray'>file_copy</i>";
         rerunElement.appendChild(copyButton);
-        const runButton = document.createElement('a');
-        runButton.innerHTML = "<button class='mdl-button mdl-js-button'>Run</button>";
-        if (login === "") {
-            runButton.href = `/github-login?dest=%2F?rerun=work_in_progress`;
-        } else {
-            if (rerunCreatesJob) {
-                runButton.onclick = () => {
-                    const form = document.createElement('form');
-                    form.method = 'POST';
-                    form.action = `${url}`;
-                    c.appendChild(form);
-                    form.submit();
-                };
+        if (rerunCreatesJob) {
+            const runButton = document.createElement('a');
+            runButton.innerHTML = "<button class='mdl-button mdl-js-button'>Rerun</button>";
+            if (login === "" && !allowAnyone) {
+                runButton.href = `/github-login?dest=%2F?rerun=gh_redirect`;
             } else {
-                runButton.href = `/?rerun=work_in_progress`;
-                runButton.onclick = () => gtag("event", "troll_rerun_popup", {event_category: "engagement", transport_type: "beacon"});
+                runButton.onclick = async () => {
+                    gtag("event", "rerun", {
+                        event_category: "engagement",
+                        transport_type: "beacon",
+                    });
+                    const result = await fetch(url, {
+                        headers: {
+                            "Content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+                            "X-CSRF-Token": csrfToken,
+                        },
+                        method: 'post',
+                    });
+                    const data = await result.text();
+                    if (result.status === 401) {
+                        window.location.href = window.location.origin + "/github-login?dest=%2F?rerun=gh_redirect";
+                    } else {
+                        rerunElement.innerHTML = data;
+                    }
+                };
             }
+            rerunElement.appendChild(runButton);
         }
-        rerunElement.appendChild(runButton);
     };
     c.appendChild(i);
     c.classList.add("icon-cell");
@@ -698,7 +705,7 @@ function createRerunCell(modal: HTMLElement, rerunElement: HTMLElement, prowjob:
 function createViewJobCell(prowjob: string): HTMLTableDataCellElement {
     const c = document.createElement("td");
     const i = icon.create("pageview", "Show job YAML", () => gtag("event", "view_job_yaml", {event_category: "engagement", transport_type: "beacon"}));
-    i.href = `https://${window.location.hostname}/prowjob?prowjob=${prowjob}`;
+    i.href = `/prowjob?prowjob=${prowjob}`;
     c.classList.add("icon-cell");
     c.appendChild(i);
     return c;

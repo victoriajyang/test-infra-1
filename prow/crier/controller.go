@@ -33,7 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
-	"k8s.io/test-infra/prow/apis/prowjobs/v1"
+	v1 "k8s.io/test-infra/prow/apis/prowjobs/v1"
 	clientset "k8s.io/test-infra/prow/client/clientset/versioned"
 	pjinformers "k8s.io/test-infra/prow/client/informers/externalversions/prowjobs/v1"
 )
@@ -86,7 +86,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	c.informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			key, err := cache.MetaNamespaceKeyFunc(obj)
-			logrus.WithField("prowjob", key).Infof("Add prowjob")
+			logrus.WithField("prowjob", key).Debug("Add prowjob")
 			if err != nil {
 				logrus.WithError(err).Error("Cannot get key from object meta")
 				return
@@ -95,7 +95,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			key, err := cache.MetaNamespaceKeyFunc(newObj)
-			logrus.WithField("prowjob", key).Infof("Update prowjob")
+			logrus.WithField("prowjob", key).Debug("Update prowjob")
 			if err != nil {
 				logrus.WithError(err).Error("Cannot get key from object meta")
 				return
@@ -141,7 +141,7 @@ func (c *Controller) runWorker() {
 func (c *Controller) retry(key interface{}, err error) bool {
 	keyRaw := key.(string)
 	if c.queue.NumRequeues(key) < 5 {
-		logrus.WithError(err).WithField("prowjob", keyRaw).Error("Failed processing item, retrying")
+		logrus.WithError(err).WithField("prowjob", keyRaw).Info("Failed processing item, retrying")
 		c.queue.AddRateLimited(key)
 	} else {
 		logrus.WithError(err).WithField("prowjob", keyRaw).Error("Failed processing item, no more retries")
@@ -181,8 +181,28 @@ func (c *Controller) updateReportState(pj *v1.ProwJob) error {
 
 	logrus.Infof("Created merge patch: %v", string(patch))
 
-	_, err = c.pjclientset.Prow().ProwJobs(pj.Namespace).Patch(pj.Name, types.MergePatchType, patch)
-	return err
+	_, err = c.pjclientset.ProwV1().ProwJobs(pj.Namespace).Patch(pj.Name, types.MergePatchType, patch)
+	if err != nil {
+		return err
+	}
+
+	// Block until the update is in the lister to make sure that events from another controller
+	// that also does reporting dont trigger another report because our lister doesn't yet contain
+	// the updated Status
+	if err := wait.Poll(time.Second, 3*time.Second, func() (bool, error) {
+		pj, err := c.informer.Lister().ProwJobs(newpj.Namespace).Get(newpj.Name)
+		if err != nil {
+			return false, err
+		}
+		if pj.Status.PrevReportStates != nil &&
+			newpj.Status.PrevReportStates[c.reporter.GetName()] == newpj.Status.State {
+			return true, nil
+		}
+		return false, nil
+	}); err != nil {
+		return fmt.Errorf("failed to wait for updated report status to be in lister: %v", err)
+	}
+	return nil
 }
 
 // processNextItem retrieves each queued item and takes the necessary handler action based off of if
@@ -263,7 +283,7 @@ func (c *Controller) processNextItem() bool {
 			// theoretically patch should not have this issue, but in case:
 			// it might be out-dated, try to re-fetch pj and try again
 
-			updatedPJ, err := c.pjclientset.Prow().ProwJobs(pjob.Namespace).Get(pjob.Name, metav1.GetOptions{})
+			updatedPJ, err := c.pjclientset.ProwV1().ProwJobs(pjob.Namespace).Get(pjob.Name, metav1.GetOptions{})
 			if err != nil {
 				logrus.WithError(err).WithField("prowjob", keyRaw).Error("failed to get prowjob from apiserver")
 				c.queue.Forget(key)

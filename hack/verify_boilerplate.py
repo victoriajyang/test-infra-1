@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # Copyright 2015 The Kubernetes Authors.
 #
@@ -16,8 +16,6 @@
 
 # Verifies that all source files contain the necessary copyright boilerplate
 # snippet.
-
-from __future__ import print_function
 
 import argparse
 import datetime
@@ -48,7 +46,9 @@ def get_refs():
     for path in glob.glob(os.path.join(ARGS.boilerplate_dir, "boilerplate.*.txt")):
         extension = os.path.basename(path).split(".")[1]
 
-        ref_file = open(path, 'r')
+        # Pass the encoding parameter to avoid ascii decode error for some
+        # platform.
+        ref_file = open(path, 'r', encoding='utf-8')
         ref = ref_file.read().splitlines()
         ref_file.close()
         refs[extension] = ref
@@ -76,7 +76,9 @@ def is_generated(data):
 
 def file_passes(filename, refs, regexs):  # pylint: disable=too-many-locals
     try:
-        with open(filename, 'r') as fp:
+        # Pass the encoding parameter to avoid ascii decode error for some
+        # platform.
+        with open(filename, 'r', encoding='utf-8') as fp:
             data = fp.read()
     except IOError:
         return False
@@ -98,7 +100,7 @@ def file_passes(filename, refs, regexs):  # pylint: disable=too-many-locals
         (data, found) = con.subn("", data, 1)
 
     # remove shebang from the top of shell files
-    if extension == "sh" or extension == "py":
+    if extension in ("sh", "py"):
         she = regexs["shebang"]
         (data, found) = she.subn("", data, 1)
 
@@ -154,7 +156,9 @@ IGNORE_HEADERS = [
 
 
 def has_ignored_header(pathname):
-    with open(pathname, 'r') as myfile:
+    # Pass the encoding parameter to avoid ascii decode error for some
+    # platform.
+    with open(pathname, 'r', encoding='utf-8') as myfile:
         data = myfile.read()
         for header in IGNORE_HEADERS:
             if data.startswith(header):

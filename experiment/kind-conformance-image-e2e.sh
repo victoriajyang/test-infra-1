@@ -20,7 +20,12 @@ set -o xtrace
 
 # set a fixed version so that users of this script manually upgrade kind
 # in a controlled fashion along with the script contents (config, flags...)
-STABLE_KIND_VERSION=v0.4.0
+#
+# NOTE: temporarily we are using a specific HEAD commit so that we
+# - get some fixes related to Kubernetes's build changing
+# - don't get surprised when kind changes between now and the next stable release
+# We should switch back to a release tag at the next release.
+STABLE_KIND_VERSION=3b6eeeebc67ae1f6acb7f1c922c5c51ed304aa51
 
 # our exit handler (trap)
 cleanup() {
@@ -45,7 +50,9 @@ install_kind() {
     TMP_DIR=$(mktemp -d)
     # ensure bin dir
     mkdir -p "${TMP_DIR}/bin"
+    pushd "${TMP_DIR}"
     env "GOPATH=${TMP_DIR}" GO111MODULE="on" go get -u "sigs.k8s.io/kind@${STABLE_KIND_VERSION}"
+    popd
     PATH="${TMP_DIR}/bin:${PATH}"
     export PATH
 }

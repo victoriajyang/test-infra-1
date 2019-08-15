@@ -45,6 +45,7 @@ prow_push(
             "ghproxy": "//ghproxy:image",
             "label_sync": "//label_sync:image",
             "commenter": "//robots/commenter:image",
+            "issue-creator": "//robots/issue-creator:image",
         },
     ),
 )
@@ -132,7 +133,6 @@ filegroup(
         "//prow/labels:all-srcs",
         "//prow/logrusutil:all-srcs",
         "//prow/metrics:all-srcs",
-        "//prow/monitoring:all-srcs",
         "//prow/phony:all-srcs",
         "//prow/pjutil:all-srcs",
         "//prow/plank:all-srcs",

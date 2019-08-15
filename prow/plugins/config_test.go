@@ -261,7 +261,7 @@ func TestSetCherryPickUnapprovedDefaults(t *testing.T) {
 
 To approve the cherry-pick, please ping the *kubernetes/patch-release-team* in a comment when ready.
 
-See also [Kuberentes Patch Releases](https://github.com/kubernetes/sig-release/blob/master/releases/patch-releases.md)`
+See also [Kubernetes Patch Releases](https://github.com/kubernetes/sig-release/blob/master/releases/patch-releases.md)`
 
 	testcases := []struct {
 		name string
@@ -376,6 +376,7 @@ func TestOptionsForItem(t *testing.T) {
 
 func TestResolveBugzillaOptions(t *testing.T) {
 	open, closed := true, false
+	yes, no := true, false
 	one, two := "v1", "v2"
 	modified, verified := []string{"VERIFIED"}, []string{"MODIFIED"}
 	post, pre := "POST", "PRE"
@@ -389,13 +390,13 @@ func TestResolveBugzillaOptions(t *testing.T) {
 		},
 		{
 			name:     "no child means a copy of parent is the output",
-			parent:   BugzillaBranchOptions{IsOpen: &open, TargetRelease: &one, Statuses: &modified, StatusAfterValidation: &post},
-			expected: BugzillaBranchOptions{IsOpen: &open, TargetRelease: &one, Statuses: &modified, StatusAfterValidation: &post},
+			parent:   BugzillaBranchOptions{ValidateByDefault: &yes, IsOpen: &open, TargetRelease: &one, Statuses: &modified, DependentBugStatuses: &verified, StatusAfterValidation: &post},
+			expected: BugzillaBranchOptions{ValidateByDefault: &yes, IsOpen: &open, TargetRelease: &one, Statuses: &modified, DependentBugStatuses: &verified, StatusAfterValidation: &post},
 		},
 		{
 			name:     "no parent means a copy of child is the output",
-			child:    BugzillaBranchOptions{IsOpen: &open, TargetRelease: &one, Statuses: &modified, StatusAfterValidation: &post},
-			expected: BugzillaBranchOptions{IsOpen: &open, TargetRelease: &one, Statuses: &modified, StatusAfterValidation: &post},
+			child:    BugzillaBranchOptions{ValidateByDefault: &yes, IsOpen: &open, TargetRelease: &one, Statuses: &modified, DependentBugStatuses: &verified, StatusAfterValidation: &post},
+			expected: BugzillaBranchOptions{ValidateByDefault: &yes, IsOpen: &open, TargetRelease: &one, Statuses: &modified, DependentBugStatuses: &verified, StatusAfterValidation: &post},
 		},
 		{
 			name:     "child overrides parent on IsOpen",
@@ -422,10 +423,28 @@ func TestResolveBugzillaOptions(t *testing.T) {
 			expected: BugzillaBranchOptions{IsOpen: &open, TargetRelease: &one, Statuses: &modified, StatusAfterValidation: &pre},
 		},
 		{
+			name:     "child overrides parent on validation by default",
+			parent:   BugzillaBranchOptions{IsOpen: &open, TargetRelease: &one, Statuses: &modified, StatusAfterValidation: &post},
+			child:    BugzillaBranchOptions{ValidateByDefault: &yes},
+			expected: BugzillaBranchOptions{ValidateByDefault: &yes, IsOpen: &open, TargetRelease: &one, Statuses: &modified, StatusAfterValidation: &post},
+		},
+		{
+			name:     "child overrides parent on dependent bug statuses",
+			parent:   BugzillaBranchOptions{IsOpen: &open, TargetRelease: &one, Statuses: &modified, DependentBugStatuses: &verified, StatusAfterValidation: &post},
+			child:    BugzillaBranchOptions{DependentBugStatuses: &modified},
+			expected: BugzillaBranchOptions{IsOpen: &open, TargetRelease: &one, Statuses: &modified, DependentBugStatuses: &modified, StatusAfterValidation: &post},
+		},
+		{
+			name:     "child overrides parent on status after mege",
+			parent:   BugzillaBranchOptions{IsOpen: &open, TargetRelease: &one, Statuses: &modified, StatusAfterValidation: &post, StatusAfterMerge: &post},
+			child:    BugzillaBranchOptions{StatusAfterMerge: &pre},
+			expected: BugzillaBranchOptions{IsOpen: &open, TargetRelease: &one, Statuses: &modified, StatusAfterValidation: &post, StatusAfterMerge: &pre},
+		},
+		{
 			name:     "child overrides parent on all fields",
-			parent:   BugzillaBranchOptions{IsOpen: &open, TargetRelease: &one, Statuses: &verified, StatusAfterValidation: &post},
-			child:    BugzillaBranchOptions{IsOpen: &closed, TargetRelease: &two, Statuses: &modified, StatusAfterValidation: &pre},
-			expected: BugzillaBranchOptions{IsOpen: &closed, TargetRelease: &two, Statuses: &modified, StatusAfterValidation: &pre},
+			parent:   BugzillaBranchOptions{ValidateByDefault: &yes, IsOpen: &open, TargetRelease: &one, Statuses: &verified, DependentBugStatuses: &verified, StatusAfterValidation: &post, StatusAfterMerge: &post},
+			child:    BugzillaBranchOptions{ValidateByDefault: &no, IsOpen: &closed, TargetRelease: &two, Statuses: &modified, DependentBugStatuses: &modified, StatusAfterValidation: &pre, StatusAfterMerge: &pre},
+			expected: BugzillaBranchOptions{ValidateByDefault: &no, IsOpen: &closed, TargetRelease: &two, Statuses: &modified, DependentBugStatuses: &modified, StatusAfterValidation: &pre, StatusAfterMerge: &pre},
 		},
 	}
 	for _, testCase := range testCases {
@@ -439,9 +458,10 @@ func TestResolveBugzillaOptions(t *testing.T) {
 
 func TestOptionsForBranch(t *testing.T) {
 	open, closed := true, false
+	yes, no := true, false
 	globalDefault, globalBranchDefault, orgDefault, orgBranchDefault, repoDefault, repoBranch := "global-default", "global-branch-default", "my-org-default", "my-org-branch-default", "my-repo-default", "my-repo-branch"
 	verified, modified := []string{"VERIFIED"}, []string{"MODIFIED"}
-	post, pre := "POST", "PRE"
+	post, pre, release, notabug := "POST", "PRE", "RELEASE_PENDING", "NOTABUG"
 
 	rawConfig := `default:
   "*":
@@ -467,10 +487,14 @@ orgs:
             target_release: my-repo-default
             statuses:
             - VERIFIED
+            validate_by_default: false
+            status_after_merge: RELEASE_PENDING
           "my-repo-branch":
             target_release: my-repo-branch
             statuses:
-            - MODIFIED`
+            - MODIFIED
+            validate_by_default: true
+            status_after_merge: NOTABUG`
 	var config Bugzilla
 	if err := yaml.Unmarshal([]byte(rawConfig), &config); err != nil {
 		t.Fatalf("couldn't unmarshal config: %v", err)
@@ -514,14 +538,14 @@ orgs:
 			org:      "my-org",
 			repo:     "my-repo",
 			branch:   "some-branch",
-			expected: BugzillaBranchOptions{IsOpen: &closed, TargetRelease: &repoDefault, Statuses: &verified, StatusAfterValidation: &pre},
+			expected: BugzillaBranchOptions{ValidateByDefault: &no, IsOpen: &closed, TargetRelease: &repoDefault, Statuses: &verified, StatusAfterValidation: &pre, StatusAfterMerge: &release},
 		},
 		{
 			name:     "branch on configured org and repo gets branch config",
 			org:      "my-org",
 			repo:     "my-repo",
 			branch:   "my-repo-branch",
-			expected: BugzillaBranchOptions{IsOpen: &closed, TargetRelease: &repoBranch, Statuses: &modified, StatusAfterValidation: &pre},
+			expected: BugzillaBranchOptions{ValidateByDefault: &yes, IsOpen: &closed, TargetRelease: &repoBranch, Statuses: &modified, StatusAfterValidation: &pre, StatusAfterMerge: &notabug},
 		},
 	}
 	for _, testCase := range testCases {
@@ -560,9 +584,9 @@ orgs:
 			org:  "my-org",
 			repo: "my-repo",
 			expected: map[string]BugzillaBranchOptions{
-				"*":              {IsOpen: &closed, TargetRelease: &repoDefault, Statuses: &verified, StatusAfterValidation: &pre},
-				"my-repo-branch": {IsOpen: &closed, TargetRelease: &repoBranch, Statuses: &modified, StatusAfterValidation: &pre},
-				"my-org-branch":  {IsOpen: &closed, TargetRelease: &repoDefault, Statuses: &verified, StatusAfterValidation: &post},
+				"*":              {ValidateByDefault: &no, IsOpen: &closed, TargetRelease: &repoDefault, Statuses: &verified, StatusAfterValidation: &pre, StatusAfterMerge: &release},
+				"my-repo-branch": {ValidateByDefault: &yes, IsOpen: &closed, TargetRelease: &repoBranch, Statuses: &modified, StatusAfterValidation: &pre, StatusAfterMerge: &notabug},
+				"my-org-branch":  {ValidateByDefault: &no, IsOpen: &closed, TargetRelease: &repoDefault, Statuses: &verified, StatusAfterValidation: &post, StatusAfterMerge: &release},
 			},
 		},
 	}

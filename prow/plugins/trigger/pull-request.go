@@ -42,7 +42,7 @@ func handlePR(c Client, trigger plugins.Trigger, pr github.PullRequestEvent) err
 		// When a PR is opened, if the author is in the org then build it.
 		// Otherwise, ask for "/ok-to-test". There's no need to look for previous
 		// "/ok-to-test" comments since the PR was just opened!
-		member, err := TrustedUser(c.GitHubClient, trigger, author, org, repo)
+		member, err := TrustedUser(c.GitHubClient, trigger.OnlyOrgMembers, trigger.TrustedOrg, author, org, repo)
 		if err != nil {
 			return fmt.Errorf("could not check membership: %s", err)
 		}
@@ -204,9 +204,10 @@ I understand the commands that are listed [here](https://go.k8s.io/bot-commands?
 
 // TrustedPullRequest returns whether or not the given PR should be tested.
 // It first checks if the author is in the org, then looks for "ok-to-test" label.
-func TrustedPullRequest(ghc githubClient, trigger plugins.Trigger, author, org, repo string, num int, l []github.Label) ([]github.Label, bool, error) {
+// If already known, GitHub labels should be provided to save tokens. Otherwise, it fetches them.
+func TrustedPullRequest(tprc trustedPullRequestClient, trigger plugins.Trigger, author, org, repo string, num int, l []github.Label) ([]github.Label, bool, error) {
 	// First check if the author is a member of the org.
-	if orgMember, err := TrustedUser(ghc, trigger, author, org, repo); err != nil {
+	if orgMember, err := TrustedUser(tprc, trigger.OnlyOrgMembers, trigger.TrustedOrg, author, org, repo); err != nil {
 		return l, false, fmt.Errorf("error checking %s for trust: %v", author, err)
 	} else if orgMember {
 		return l, true, nil
@@ -214,7 +215,7 @@ func TrustedPullRequest(ghc githubClient, trigger plugins.Trigger, author, org, 
 	// Then check if PR has ok-to-test label
 	if l == nil {
 		var err error
-		l, err = ghc.GetIssueLabels(org, repo, num)
+		l, err = tprc.GetIssueLabels(org, repo, num)
 		if err != nil {
 			return l, false, err
 		}

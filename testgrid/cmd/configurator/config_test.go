@@ -21,11 +21,10 @@ import (
 	"io/ioutil"
 	"net/mail"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-
-	"path/filepath"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 
@@ -65,28 +64,30 @@ var (
 )
 
 const (
-	prowPath = "../../../prow/config.yaml"
-	jobPath  = "../../../config/jobs"
+	prowPath    = "../../../prow/config.yaml"
+	jobPath     = "../../../config/jobs"
+	defaultPath = "../../../config/testgrids/default.yaml"
 )
 
 // Shared testgrid config, loaded at TestMain.
 var cfg *config_pb.Configuration
 
 func TestMain(m *testing.M) {
-	//make sure we can parse config.yaml
-	c := Config{}
-	yamlFiles := []string{"../../config.yaml", "../../generated-test-config.yaml"}
-	for _, path := range yamlFiles {
-		yamlData, err := ioutil.ReadFile(path)
-		if err != nil {
-			fmt.Printf("IO Error : Cannot Open File %s", path)
-			os.Exit(1)
-		}
+	//make sure we can parse configurations
+	yamlFiles := []string{"../../../config/testgrids"}
 
-		if err := c.Update(yamlData); err != nil {
-			fmt.Printf("Yaml2Proto - Conversion Error %v", err)
-			os.Exit(1)
-		}
+	var c Config
+	b, err := ioutil.ReadFile(defaultPath)
+	if err != nil {
+		fmt.Printf("Could not read default config: %v", err)
+	}
+	if err := c.UpdateDefaults(b); err != nil {
+		fmt.Printf("Could not update defaults: %v", err)
+	}
+
+	if err := readToConfig(&c, yamlFiles); err != nil {
+		fmt.Printf("Could not read testgrid config: %v", err)
+		os.Exit(1)
 	}
 
 	pca := &prow_config.Agent{}
@@ -94,12 +95,12 @@ func TestMain(m *testing.M) {
 		fmt.Printf("Prow config agent error: %v", err)
 		os.Exit(1)
 	}
+
 	if err := applyProwjobAnnotations(&c, pca); err != nil {
 		fmt.Printf("Couldn't apply prowjob annotations: %v", err)
 		os.Exit(1)
 	}
 
-	var err error
 	cfg, err = c.Raw()
 	if err != nil {
 		fmt.Printf("Error validating config: %v", err)
@@ -371,7 +372,6 @@ var noPresubmitsInTestgridPrefixes = []string{
 	"kubernetes-sigs/gcp-compute-persistent-disk-csi-driver",
 	"kubernetes-sigs/gcp-filestore-csi-driver",
 	"kubernetes-sigs/kind",
-	"kubernetes-sigs/kube-storage-version-migrator",
 	"kubernetes-sigs/kubebuilder-declarative-pattern",
 	"kubernetes-sigs/service-catalog",
 	"kubernetes-sigs/sig-storage-local-static-provisioner",
@@ -400,9 +400,6 @@ func hasAnyPrefix(s string, prefixes []string) bool {
 }
 
 func TestKubernetesProwInstanceJobsMustHaveMatchingTestgridEntries(t *testing.T) {
-	prowPath := "../../../prow/config.yaml"
-	jobPath := "../../../config/jobs"
-
 	jobs := make(map[string]bool)
 
 	prowConfig, err := prow_config.Load(prowPath, jobPath)

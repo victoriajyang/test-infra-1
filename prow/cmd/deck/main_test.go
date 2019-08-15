@@ -23,8 +23,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/gorilla/sessions"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/oauth2"
 	"io"
 	"io/ioutil"
+	"k8s.io/test-infra/prow/github/fakegithub"
+	"k8s.io/test-infra/prow/githuboauth"
+	"k8s.io/test-infra/prow/plugins"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -32,6 +38,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/google/go-github/github"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -253,20 +261,110 @@ func TestProwJob(t *testing.T) {
 	}
 }
 
+type mockGitHubConfigGetter struct {
+	githubLogin string
+}
+
+func (getter mockGitHubConfigGetter) GetGitHubClient(accessToken string, dryRun bool) githuboauth.GitHubClientWrapper {
+	return getter
+}
+
+func (getter mockGitHubConfigGetter) GetUser(login string) (*github.User, error) {
+	return &github.User{Login: &getter.githubLogin}, nil
+}
+
 // TestRerun just checks that the result can be unmarshaled properly, has an
 // updated status, and has equal spec.
 func TestRerun(t *testing.T) {
 	testCases := []struct {
 		name                string
-		shouldCreateProwjob bool
+		login               string
+		authorized          []string
+		allowAnyone         bool
+		rerunCreatesJob     bool
+		shouldCreateProwJob bool
+		httpCode            int
+		httpMethod          string
 	}{
 		{
 			name:                "Handler returns ProwJob",
-			shouldCreateProwjob: false,
+			login:               "authorized",
+			authorized:          []string{"authorized", "alsoauthorized"},
+			allowAnyone:         false,
+			rerunCreatesJob:     true,
+			shouldCreateProwJob: true,
+			httpCode:            http.StatusOK,
+			httpMethod:          http.MethodPost,
 		},
 		{
-			name:                "Handler creates ProwJob",
-			shouldCreateProwjob: true,
+			name:                "User not authorized to create prow job",
+			login:               "random-dude",
+			authorized:          []string{"authorized", "alsoauthorized"},
+			allowAnyone:         false,
+			rerunCreatesJob:     true,
+			shouldCreateProwJob: false,
+			httpCode:            http.StatusOK,
+			httpMethod:          http.MethodPost,
+		},
+		{
+			name:                "RerunCreatesJob set to false, should not create prow job",
+			login:               "authorized",
+			authorized:          []string{"authorized", "alsoauthorized"},
+			allowAnyone:         true,
+			rerunCreatesJob:     false,
+			shouldCreateProwJob: false,
+			httpCode:            http.StatusOK,
+			httpMethod:          http.MethodGet,
+		},
+		{
+			name:                "Allow anyone set to true, creates job",
+			login:               "ugh",
+			authorized:          []string{"authorized", "alsoauthorized"},
+			allowAnyone:         true,
+			rerunCreatesJob:     true,
+			shouldCreateProwJob: true,
+			httpCode:            http.StatusOK,
+			httpMethod:          http.MethodPost,
+		},
+		{
+			name:                "Direct rerun disabled, post request",
+			login:               "authorized",
+			authorized:          []string{"authorized", "alsoauthorized"},
+			allowAnyone:         true,
+			rerunCreatesJob:     false,
+			shouldCreateProwJob: false,
+			httpCode:            http.StatusMethodNotAllowed,
+			httpMethod:          http.MethodPost,
+		},
+		{
+			name:                "User permitted on specific job",
+			login:               "authorized",
+			authorized:          []string{},
+			allowAnyone:         false,
+			rerunCreatesJob:     true,
+			shouldCreateProwJob: true,
+			httpCode:            http.StatusOK,
+			httpMethod:          http.MethodPost,
+		},
+		{
+			name:                "User on permitted team",
+			login:               "sig-lead",
+			authorized:          []string{},
+			allowAnyone:         false,
+			rerunCreatesJob:     true,
+			shouldCreateProwJob: true,
+			httpCode:            http.StatusOK,
+			httpMethod:          http.MethodPost,
+		},
+		{
+			name:                "Org member permitted for presubmits",
+			login:               "org-member",
+			authorized:          []string{},
+			allowAnyone:         false,
+			rerunCreatesJob:     true,
+			shouldCreateProwJob: true,
+			httpCode:            http.StatusOK,
+			httpMethod:          http.MethodPost,
 		},
 	}
 
@@ -284,26 +382,62 @@ func TestRerun(t *testing.T) {
 						Org:  "org",
 						Repo: "repo",
 						Pulls: []prowapi.Pull{
-							{Number: 1},
+							{
+								Number: 1,
+								Author: tc.login,
+							},
 						},
+					},
+					RerunAuthConfig: prowapi.RerunAuthConfig{
+						AllowAnyone:   false,
+						GitHubUsers:   []string{"authorized", "alsoauthorized"},
+						GitHubTeamIDs: []int{42},
 					},
 				},
 				Status: prowapi.ProwJobStatus{
 					State: prowapi.PendingState,
 				},
 			})
-			handler := handleRerun(fakeProwJobClient.ProwV1().ProwJobs("prowjobs"), tc.shouldCreateProwjob)
-			req, err := http.NewRequest(http.MethodPost, "/rerun?prowjob=wowsuch", nil)
+			configGetter := func() *prowapi.RerunAuthConfig {
+				return &prowapi.RerunAuthConfig{
+					AllowAnyone: tc.allowAnyone,
+					GitHubUsers: tc.authorized,
+				}
+			}
+
+			req, err := http.NewRequest(tc.httpMethod, "/rerun?prowjob=wowsuch", nil)
+			req.AddCookie(&http.Cookie{
+				Name:    "github_login",
+				Value:   tc.login,
+				Path:    "/",
+				Expires: time.Now().Add(time.Hour * 24 * 30),
+				Secure:  true,
+			})
+			mockCookieStore := sessions.NewCookieStore([]byte("secret-key"))
+			session, err := sessions.GetRegistry(req).Get(mockCookieStore, "access-token-session")
+			if err != nil {
+				t.Fatalf("Error making access token session: %v", err)
+			}
+			session.Values["access-token"] = &oauth2.Token{AccessToken: "validtoken"}
+
 			if err != nil {
 				t.Fatalf("Error making request: %v", err)
 			}
 			rr := httptest.NewRecorder()
+			mockConfig := &config.GitHubOAuthConfig{
+				CookieStore: mockCookieStore,
+			}
+			goa := githuboauth.NewAgent(mockConfig, &logrus.Entry{})
+			ghc := mockGitHubConfigGetter{githubLogin: tc.login}
+			rc := &fakegithub.FakeClient{OrgMembers: map[string][]string{"org": {"org-member"}}}
+			pca := plugins.NewFakeConfigAgent()
+			handler := handleRerun(fakeProwJobClient.ProwV1().ProwJobs("prowjobs"), tc.rerunCreatesJob, configGetter, goa, ghc, rc, &pca)
 			handler.ServeHTTP(rr, req)
+			if rr.Code != tc.httpCode {
+				t.Fatalf("Bad error code: %d", rr.Code)
+			}
 
-			if tc.shouldCreateProwjob {
-				if rr.Code != http.StatusNoContent {
-					t.Fatalf("Unexpected http status code: %d, expected 204", rr.Code)
-				}
+			if tc.shouldCreateProwJob {
 				pjs, err := fakeProwJobClient.ProwV1().ProwJobs("prowjobs").List(metav1.ListOptions{})
 				if err != nil {
 					t.Fatalf("failed to list prowjobs: %v", err)
@@ -312,10 +446,7 @@ func TestRerun(t *testing.T) {
 					t.Errorf("expected to get two prowjobs, got %d", numPJs)
 				}
 
-			} else {
-				if rr.Code != http.StatusOK {
-					t.Fatalf("Bad error code: %d", rr.Code)
-				}
+			} else if !tc.rerunCreatesJob && tc.httpCode == http.StatusOK {
 				resp := rr.Result()
 				defer resp.Body.Close()
 				body, err := ioutil.ReadAll(resp.Body)
@@ -784,15 +915,19 @@ func Test_gatherOptions(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
+		fs := flag.NewFlagSet("fake-flags", flag.PanicOnError)
+		ghoptions := flagutil.GitHubOptions{}
+		ghoptions.AddFlagsWithoutDefaultGitHubTokenPath(fs)
 		t.Run(tc.name, func(t *testing.T) {
 			expected := &options{
 				configPath:            "yo",
 				githubOAuthConfigFile: "/etc/github/secret",
-				cookieSecretFile:      "/etc/cookie/secret",
+				cookieSecretFile:      "",
 				staticFilesLocation:   "/static",
 				templateFilesLocation: "/template",
 				spyglassFilesLocation: "/lenses",
 				kubernetes:            flagutil.ExperimentalKubernetesOptions{},
+				github:                ghoptions,
 			}
 			if tc.expected != nil {
 				tc.expected(expected)
@@ -883,8 +1018,8 @@ func TestHandleConfig(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("Bad error code: %d", rr.Code)
 	}
-	if h := rr.Header().Get("Content-Type"); h != "application/x-yaml" {
-		t.Fatalf("Bad Content-Type, expected: 'application/x-yaml', got: %v", h)
+	if h := rr.Header().Get("Content-Type"); h != "text/plain" {
+		t.Fatalf("Bad Content-Type, expected: 'text/plain', got: %v", h)
 	}
 	resp := rr.Result()
 	defer resp.Body.Close()

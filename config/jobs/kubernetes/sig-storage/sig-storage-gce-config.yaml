@@ -40,15 +40,17 @@ presubmits:
         - --provider=gce
         - --runtime-config=batch/v2alpha1=true
         - --stage=gs://kubernetes-release-pull/ci/pull-kubernetes-e2e-gce-storage-slow
-        - --test_args=--ginkgo.focus=\[sig-storage\].*\[Slow\] --ginkgo.skip=\[Serial\]|\[Disruptive\]|\[Flaky\]|\[Feature:.+\]|gcePD-external --minStartupPods=8
+        - --test_args=--ginkgo.focus=\[sig-storage\].*\[Slow\] --ginkgo.skip=\[Serial\]|\[Disruptive\]|\[Flaky\]|\[Feature:.+\] --minStartupPods=8
         - --timeout=80m
         # Bazel needs privileged mode in order to sandbox builds.
         securityContext:
           privileged: true
-        image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+        image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
         resources:
           requests:
             memory: "6Gi"
+    annotations:
+      testgrid-create-test-group: 'true'
   - name: pull-kubernetes-e2e-gce-storage-slow-rbe
     always_run: false
     optional: true
@@ -84,7 +86,7 @@ presubmits:
       path_alias: k8s.io/test-infra
     spec:
       containers:
-      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
         command:
         - ../test-infra/scenarios/kubernetes_e2e.py
         args:
@@ -98,8 +100,10 @@ presubmits:
         - --provider=gce
         - --runtime-config=batch/v2alpha1=true
         - --stage=gs://kubernetes-release-pull/ci/pull-kubernetes-e2e-gce-storage-slow
-        - --test_args=--ginkgo.focus=\[sig-storage\].*\[Slow\] --ginkgo.skip=\[Serial\]|\[Disruptive\]|\[Flaky\]|\[Feature:.+\]|gcePD-external --minStartupPods=8
+        - --test_args=--ginkgo.focus=\[sig-storage\].*\[Slow\] --ginkgo.skip=\[Serial\]|\[Disruptive\]|\[Flaky\]|\[Feature:.+\]| --minStartupPods=8
         - --timeout=80m
+    annotations:
+      testgrid-create-test-group: 'true'
   - name: pull-kubernetes-e2e-gce-csi-serial
     always_run: false
     optional: true
@@ -139,12 +143,14 @@ presubmits:
         - --provider=gce
         - --runtime-config=batch/v2alpha1=true
         - --stage=gs://kubernetes-release-pull/ci/pull-kubernetes-e2e-gce-csi-serial
-        - --test_args=--ginkgo.focus=CSI.*(\[Serial\]|\[Disruptive\]) --ginkgo.skip=\[Flaky\]|\[Feature:.+\]|gcePD-external --minStartupPods=8
+        - --test_args=--ginkgo.focus=CSI.*(\[Serial\]|\[Disruptive\]) --ginkgo.skip=\[Flaky\]|\[Feature:.+\]|\[Slow\] --minStartupPods=8
         - --timeout=120m
-        image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+        image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
         resources:
           requests:
             memory: "6Gi"
+    annotations:
+      testgrid-create-test-group: 'true'
   - name: pull-kubernetes-e2e-gce-iscsi
     always_run: false
     optional: true
@@ -180,10 +186,12 @@ presubmits:
         - --stage=gs://kubernetes-release-pull/ci/pull-kubernetes-e2e-gce-iscsi
         - --test_args=--ginkgo.focus=\[Driver:.iscsi\] --ginkgo.skip=\[Serial\]|\[Disruptive\]|\[Flaky\] --minStartupPods=8
         - --timeout=120m
-        image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+        image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
         resources:
           requests:
             memory: "6Gi"
+    annotations:
+      testgrid-create-test-group: 'true'
   - name: pull-kubernetes-e2e-gce-iscsi-serial
     always_run: false
     optional: true
@@ -218,11 +226,13 @@ presubmits:
         - --stage=gs://kubernetes-release-pull/ci/pull-kubernetes-e2e-gce-iscsi-serial
         - --test_args=--ginkgo.focus=\[Driver:.iscsi\].*(\[Serial\]|\[Disruptive\]) --ginkgo.skip=\[Flaky\] --minStartupPods=8
         - --timeout=120m
-        image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+        image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
         resources:
           requests:
             memory: "6Gi"
 
+    annotations:
+      testgrid-create-test-group: 'true'
 periodics:
 - interval: 24h
   name: ci-kubernetes-e2e-gce-iscsi
@@ -255,10 +265,12 @@ periodics:
       - --stage=gs://kubernetes-release-pull/ci/ci-kubernetes-e2e-gce-iscsi
       - --test_args=--ginkgo.focus=\[Driver:.iscsi\] --ginkgo.skip=\[Serial\]|\[Disruptive\]|\[Flaky\] --minStartupPods=8
       - --timeout=120m
-      image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+      image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
       resources:
         requests:
           memory: "6Gi"
+  annotations:
+    testgrid-num-columns-recent: '20'
 - interval: 24h
   name: ci-kubernetes-e2e-gce-iscsi-serial
   labels:
@@ -289,7 +301,9 @@ periodics:
       - --stage=gs://kubernetes-release-pull/ci/ci-kubernetes-e2e-gce-iscsi-serial
       - --test_args=--ginkgo.focus=\[Driver:.iscsi\].*(\[Serial\]|\[Disruptive\]) --ginkgo.skip=\[Flaky\] --minStartupPods=8
       - --timeout=120m
-      image: gcr.io/k8s-testimages/kubekins-e2e:v20190628-9455316-master
+      image: gcr.io/k8s-testimages/kubekins-e2e:v20190813-5765933-master
       resources:
         requests:
           memory: "6Gi"
+  annotations:
+    testgrid-num-columns-recent: '20'

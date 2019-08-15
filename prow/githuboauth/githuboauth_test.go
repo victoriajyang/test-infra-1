@@ -105,7 +105,7 @@ func TestHandleLogin(t *testing.T) {
 	mockRequest := httptest.NewRequest(http.MethodGet, "/mock-login?dest="+dest+"?rerun="+rerunStatus, nil)
 	mockResponse := httptest.NewRecorder()
 
-	handleLoginFn := mockAgent.HandleLogin(mockOAuthClient)
+	handleLoginFn := mockAgent.HandleLogin(mockOAuthClient, false)
 	handleLoginFn.ServeHTTP(mockResponse, mockRequest)
 	result := mockResponse.Result()
 	if result.StatusCode != http.StatusFound {
@@ -252,6 +252,28 @@ func (fgc *fakeGetter) GetGitHubClient(accessToken string, dryRun bool) GitHubCl
 	return &fakeGitHubClient{login: fgc.login}
 }
 
+func TestGetLogin(t *testing.T) {
+	cookie := sessions.NewCookieStore([]byte("secret-key"))
+	mockConfig := getMockConfig(cookie)
+	mockLogger := logrus.WithField("uni-test", "githuboauth")
+	mockAgent := NewAgent(mockConfig, mockLogger)
+	mockToken := &oauth2.Token{AccessToken: "tokentokentoken"}
+	mockRequest := httptest.NewRequest(http.MethodGet, "/someurl", nil)
+	mockSession, err := sessions.GetRegistry(mockRequest).Get(cookie, "access-token-session")
+	if err != nil {
+		t.Fatalf("Error with getting mock session: %v", err)
+	}
+	mockSession.Values["access-token"] = mockToken
+
+	login, err := mockAgent.GetLogin(mockRequest, &fakeGetter{"correct-login"})
+	if err != nil {
+		t.Fatalf("Error getting login: %v", err)
+	}
+	if login != "correct-login" {
+		t.Fatalf("Incorrect login: %s", login)
+	}
+}
+
 func TestHandleRedirectWithInvalidState(t *testing.T) {
 	gob.Register(&oauth2.Token{})
 	cookie := sessions.NewCookieStore([]byte("secret-key"))
@@ -272,7 +294,7 @@ func TestHandleRedirectWithInvalidState(t *testing.T) {
 	}
 	mockSession.Values[stateKey] = mockStateToken
 
-	handleLoginFn := mockAgent.HandleRedirect(mockOAuthClient, &fakeGetter{""})
+	handleLoginFn := mockAgent.HandleRedirect(mockOAuthClient, &fakeGetter{""}, false)
 	handleLoginFn.ServeHTTP(mockResponse, mockRequest)
 	result := mockResponse.Result()
 
@@ -306,7 +328,7 @@ func TestHandleRedirectWithValidState(t *testing.T) {
 	}
 	mockSession.Values[stateKey] = mockStateToken
 
-	handleLoginFn := mockAgent.HandleRedirect(mockOAuthClient, &fakeGetter{mockLogin})
+	handleLoginFn := mockAgent.HandleRedirect(mockOAuthClient, &fakeGetter{mockLogin}, false)
 	handleLoginFn.ServeHTTP(mockResponse, mockRequest)
 	result := mockResponse.Result()
 	if result.StatusCode != http.StatusFound {

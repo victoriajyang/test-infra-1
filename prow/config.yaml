@@ -7,10 +7,10 @@ plank:
     timeout: 2h
     grace_period: 15s
     utility_images:
-      clonerefs: "gcr.io/k8s-prow/clonerefs:v20190628-eb4a10930"
-      initupload: "gcr.io/k8s-prow/initupload:v20190628-eb4a10930"
-      entrypoint: "gcr.io/k8s-prow/entrypoint:v20190628-eb4a10930"
-      sidecar: "gcr.io/k8s-prow/sidecar:v20190628-eb4a10930"
+      clonerefs: "gcr.io/k8s-prow/clonerefs:v20190814-9981dc3c5"
+      initupload: "gcr.io/k8s-prow/initupload:v20190814-9981dc3c5"
+      entrypoint: "gcr.io/k8s-prow/entrypoint:v20190814-9981dc3c5"
+      sidecar: "gcr.io/k8s-prow/sidecar:v20190814-9981dc3c5"
     gcs_configuration:
       bucket: "kubernetes-jenkins"
       path_strategy: "legacy"
@@ -44,17 +44,10 @@ deck:
   - kubernetes-security
   google_analytics: UA-82843984-5
   rerun_auth_config:
-    authorized_users:
+    github_users:
       - mirandachrist
-      - cjwagner
-      - amwat
-      - fejta
-      - ixdy
-      - Katharine
-      - krzyzacy
-      - michelle192837
-      - spiffxp
-      - stevekuznetsov
+    github_team_ids:
+      - 2009231 #test-infra-admins
 
 prowjob_namespace: default
 pod_namespace: test-pods
@@ -68,6 +61,10 @@ branch-protection:
       required_status_checks:
         contexts:
         - cla/linuxfoundation
+      exclude:
+        - "^revert-" # don't protect revert branches
+        - "^dependabot/" # don't protect branches created by dependabot
+        - "^greenkeeper/" # don't protect branches created by greenkeeper
       repos:
         api:
           restrictions:
@@ -250,6 +247,10 @@ branch-protection:
       required_status_checks:
         contexts:
         - cla/linuxfoundation
+      exclude:
+        - "^revert-" # don't protect revert branches
+        - "^dependabot/" # don't protect branches created by dependabot
+        - "^greenkeeper/" # don't protect branches created by greenkeeper
       repos:
         python:
           required_status_checks:
@@ -264,11 +265,19 @@ branch-protection:
       required_status_checks:
         contexts:
         - cla/linuxfoundation
+      exclude:
+        - "^revert-" # don't protect revert branches
+        - "^dependabot/" # don't protect branches created by dependabot
+        - "^greenkeeper/" # don't protect branches created by greenkeeper
     kubernetes-incubator:
       protect: true
       required_status_checks:
         contexts:
         - cla/linuxfoundation
+      exclude:
+        - "^revert-" # don't protect revert branches
+        - "^dependabot/" # don't protect branches created by dependabot
+        - "^greenkeeper/" # don't protect branches created by greenkeeper
       repos:
         apiserver-builder:
           required_status_checks:
@@ -299,6 +308,10 @@ branch-protection:
       required_status_checks:
         contexts:
         - cla/linuxfoundation
+      exclude:
+        - "^revert-" # don't protect revert branches
+        - "^dependabot/" # don't protect branches created by dependabot
+        - "^greenkeeper/" # don't protect branches created by greenkeeper
       repos:
         kube-batch:
           required_status_checks:
@@ -408,9 +421,6 @@ tide:
     - needs-sig
   - repos:
     - GoogleCloudPlatform/netd
-    - bazelbuild/bazel-toolchains
-    - bazelbuild/rules_docker
-    - bazelbuild/rules_k8s
     labels:
     - lgtm
     - approved
@@ -420,32 +430,17 @@ tide:
     - do-not-merge/hold
     - do-not-merge/invalid-owners-file
     - do-not-merge/work-in-progress
-  # Auto-merge PRs generated for automatic configs release by robot.
-  - repos:
-    - bazelbuild/bazel-toolchains
-    labels:
-    - automerge
-    missingLabels:
-    - do-not-merge
-    - do-not-merge/hold
-    - do-not-merge/invalid-owners-file
-    - do-not-merge/work-in-progress
 
   merge_method:
-    bazelbuild/bazel-toolchains: squash
-    bazelbuild/rules_docker: squash
-    bazelbuild/rules_k8s: squash
     helm/charts: squash
     kubeflow: squash
     kubernetes-client/csharp: squash
     kubernetes-client/gen: squash
-    kubernetes-sigs/cluster-api-provider-aws: squash
     kubernetes-sigs/cluster-api-provider-azure: squash
     kubernetes-sigs/cluster-api-provider-digitalocean: squash
     kubernetes-sigs/cluster-api-provider-gcp: squash
     kubernetes-sigs/cluster-api-provider-ibmcloud: squash
     kubernetes-sigs/cluster-api-provider-openstack: squash
-    kubernetes-sigs/cluster-api: squash
     kubernetes-sigs/krew-index: squash
     kubernetes-sigs/krew: squash
     kubernetes-sigs/kubespray: squash
@@ -631,3 +626,7 @@ presets:
       hostPath:
         path: /sys/fs/cgroup
         type: Directory
+# enable GOPROXY by default
+- env:
+  - name: GOPROXY
+    value: "https://proxy.golang.org"

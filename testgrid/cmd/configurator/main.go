@@ -25,13 +25,16 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	prowConfig "k8s.io/test-infra/prow/config"
 	"k8s.io/test-infra/testgrid/util/gcs"
+	"sigs.k8s.io/yaml"
 
 	"cloud.google.com/go/storage"
+	"github.com/sirupsen/logrus"
 )
 
 type multiString []string
@@ -45,6 +48,9 @@ func (m *multiString) Set(v string) error {
 	return nil
 }
 
+// How long Configurator waits between file checks in polling mode
+const pollingTime = time.Second
+
 type options struct {
 	creds              string
 	inputs             multiString
@@ -53,70 +59,91 @@ type options struct {
 	printText          bool
 	validateConfigFile bool
 	worldReadable      bool
+	writeYAML          bool
 	prowConfig         string
 	prowJobConfig      string
+	defaultYAML        string
 }
 
-func gatherOptions() (options, error) {
-	o := options{}
-	flag.StringVar(&o.creds, "gcp-service-account", "", "/path/to/gcp/creds (use local creds if empty)")
-	flag.BoolVar(&o.oneshot, "oneshot", false, "Write proto once and exit instead of monitoring --yaml files for changes")
-	flag.StringVar(&o.output, "output", "", "write proto to gs://bucket/obj or /local/path")
-	flag.BoolVar(&o.printText, "print-text", false, "print generated proto in text format to stdout")
-	flag.BoolVar(&o.validateConfigFile, "validate-config-file", false, "validate that the given config files are syntactically correct and exit (proto is not written anywhere)")
-	flag.BoolVar(&o.worldReadable, "world-readable", false, "when uploading the proto to GCS, makes it world readable. Has no effect on writing to the local filesystem.")
-	flag.Var(&o.inputs, "yaml", "comma-separated list of input YAML files")
-	flag.StringVar(&o.prowConfig, "prow-config", "", "path to the prow config file. Required by --prow-job-config")
-	flag.StringVar(&o.prowJobConfig, "prow-job-config", "", "path to the prow job config. If specified, incorporates testgrid annotations on prowjobs. Requires --prow-config.")
-	flag.Parse()
+func (o *options) gatherOptions(fs *flag.FlagSet, args []string) error {
+	fs.StringVar(&o.creds, "gcp-service-account", "", "/path/to/gcp/creds (use local creds if empty)")
+	fs.BoolVar(&o.oneshot, "oneshot", false, "Write proto once and exit instead of monitoring --yaml files for changes")
+	fs.StringVar(&o.output, "output", "", "write proto to gs://bucket/obj or /local/path")
+	fs.BoolVar(&o.printText, "print-text", false, "print generated info in text format to stdout")
+	fs.BoolVar(&o.validateConfigFile, "validate-config-file", false, "validate that the given config files are syntactically correct and exit (proto is not written anywhere)")
+	fs.BoolVar(&o.worldReadable, "world-readable", false, "when uploading the proto to GCS, makes it world readable. Has no effect on writing to the local filesystem.")
+	fs.BoolVar(&o.writeYAML, "output-yaml", false, "Output to TestGrid YAML instead of config proto")
+	fs.Var(&o.inputs, "yaml", "comma-separated list of input YAML files or directories")
+	fs.StringVar(&o.prowConfig, "prow-config", "", "path to the prow config file. Required by --prow-job-config")
+	fs.StringVar(&o.prowJobConfig, "prow-job-config", "", "path to the prow job config. If specified, incorporates testgrid annotations on prowjobs. Requires --prow-config.")
+	fs.StringVar(&o.defaultYAML, "default", "", "path to default settings; required for proto outputs")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
 	if len(o.inputs) == 0 || o.inputs[0] == "" {
-		return o, errors.New("--yaml must include at least one file")
+		return errors.New("--yaml must include at least one file")
 	}
 
 	if !o.printText && !o.validateConfigFile && o.output == "" {
-		return o, errors.New("--print-text or --output=gs://path required")
+		return errors.New("--print-text, --validate-config-file, or --output required")
 	}
 	if o.validateConfigFile && o.output != "" {
-		return o, errors.New("--validate-config-file doesn't write the proto anywhere")
+		return errors.New("--validate-config-file doesn't write the proto anywhere")
 	}
 	if (o.prowConfig == "") != (o.prowJobConfig == "") {
-		return o, errors.New("--prow-config and --prow-job-config must be specified together")
+		return errors.New("--prow-config and --prow-job-config must be specified together")
 	}
-	return o, nil
+	if o.defaultYAML == "" && !o.writeYAML {
+		logrus.Warnf("--default not explicitly specified; assuming %s", o.inputs[0])
+		o.defaultYAML = o.inputs[0]
+	}
+	return nil
 }
 
-// announceChanges watches for changes to files and writes one of them to the channel
+// announceChanges watches for changes in "paths" and writes them to the channel
 func announceChanges(ctx context.Context, paths []string, channel chan []string) {
 	defer close(channel)
 	modified := map[string]time.Time{}
-	for _, p := range paths {
-		modified[p] = time.Time{} // Never seen
-	}
 
 	// TODO(fejta): consider waiting for a notification rather than polling
 	// but performance isn't that big a deal here.
 	for {
+		// Terminate
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		var changed []string
-		for p, last := range modified {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			switch info, err := os.Stat(p); {
-			case os.IsNotExist(err) && !last.IsZero():
-				// File deleted
-				modified[p] = time.Time{}
+
+		// Check known files for deletions
+		for p := range modified {
+			_, accessErr := os.Stat(p)
+			if os.IsNotExist(accessErr) {
 				changed = append(changed, p)
-			case err != nil:
-				log.Printf("Error reading %s: %v", p, err)
-			default:
-				if t := info.ModTime(); t.After(last) {
-					changed = append(changed, p)
-					modified[p] = t
-				}
+				delete(modified, p)
 			}
 		}
+
+		// Check given locations for new or modified files
+		err := walkForYAMLFiles(paths, func(path string, info os.FileInfo) error {
+			lastModTime, present := modified[path]
+
+			if t := info.ModTime(); !present || t.After(lastModTime) {
+				changed = append(changed, path)
+				modified[path] = t
+			}
+
+			return nil
+		})
+
+		if err != nil {
+			logrus.WithError(err).Error("walk issue in announcer")
+			return
+		}
+
 		if len(changed) > 0 {
 			select {
 			case <-ctx.Done():
@@ -124,7 +151,7 @@ func announceChanges(ctx context.Context, paths []string, channel chan []string)
 			case channel <- changed:
 			}
 		} else {
-			time.Sleep(1 * time.Second)
+			time.Sleep(pollingTime)
 		}
 	}
 }
@@ -142,18 +169,55 @@ func announceProwChanges(ctx context.Context, pca *prowConfig.Agent, channel cha
 	}
 }
 
-func readConfig(paths []string) (*Config, error) {
-	var c Config
-	for _, file := range paths {
-		b, err := ioutil.ReadFile(file)
+func readToConfig(c *Config, paths []string) error {
+	err := walkForYAMLFiles(paths, func(path string, info os.FileInfo) error {
+		// Read YAML file and update config
+		b, err := ioutil.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read %s: %v", file, err)
+			return fmt.Errorf("failed to read %s: %v", path, err)
 		}
 		if err = c.Update(b); err != nil {
-			return nil, fmt.Errorf("failed to merge %s into config: %v", file, err)
+			return fmt.Errorf("failed to merge %s into config: %v", path, err)
+		}
+
+		return nil
+	})
+
+	return err
+}
+
+// walks through paths and directories, calling the passed function on each YAML file
+// future modifications to what Configurator sees as a "config file" can be made here
+func walkForYAMLFiles(paths []string, callFunc func(path string, info os.FileInfo) error) error {
+	for _, path := range paths {
+		_, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("Failed status call on %s: %v", path, err)
+		}
+
+		err = filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				logrus.WithError(err).Errorf("walking path %q.", path)
+				// bad file should not stop us from parsing the directory
+				return nil
+			}
+
+			if filepath.Ext(path) != ".yaml" && filepath.Ext(path) != ".yml" {
+				return nil
+			}
+
+			if info.IsDir() {
+				return nil
+			}
+
+			return callFunc(path, info)
+		})
+
+		if err != nil {
+			return fmt.Errorf("Failed to walk through %s: %v", path, err)
 		}
 	}
-	return &c, nil
+	return nil
 }
 
 func write(ctx context.Context, client *storage.Client, path string, bytes []byte, worldReadable bool) error {
@@ -171,27 +235,60 @@ func write(ctx context.Context, client *storage.Client, path string, bytes []byt
 	return gcs.Upload(ctx, client, p, bytes, worldReadable)
 }
 
+func marshallYAML(c *Config) ([]byte, error) {
+	bytes, err := yaml.Marshal(c.config)
+	if err != nil {
+		return nil, fmt.Errorf("could not write config to yaml: %v", err)
+	}
+	return bytes, nil
+}
+
+// Ignores what changed for now and recomputes everything
 func doOneshot(ctx context.Context, client *storage.Client, opt options, prowConfigAgent *prowConfig.Agent) error {
-	// Ignore what changed for now and just recompute everything
-	c, err := readConfig(opt.inputs)
+
+	// Read Data Sources: Default, YAML configs, Prow Annotations
+	var c Config
+	if opt.defaultYAML != "" {
+		b, err := ioutil.ReadFile(opt.defaultYAML)
+		if err != nil {
+			return err
+		}
+		if err := c.UpdateDefaults(b); err != nil {
+			return err
+		}
+	}
+
+	err := readToConfig(&c, opt.inputs)
 	if err != nil {
 		return fmt.Errorf("could not read config: %v", err)
 	}
 
-	if err := applyProwjobAnnotations(c, prowConfigAgent); err != nil {
+	if err := applyProwjobAnnotations(&c, prowConfigAgent); err != nil {
 		return fmt.Errorf("could not apply prowjob annotations: %v", err)
 	}
 
 	// Print proto if requested
 	if opt.printText {
-		if err := c.MarshalText(os.Stdout); err != nil {
+		if opt.writeYAML {
+			b, err := marshallYAML(&c)
+			if err != nil {
+				return fmt.Errorf("could not print yaml config: %v", err)
+			}
+			os.Stdout.Write(b)
+		} else if err := c.MarshalText(os.Stdout); err != nil {
 			return fmt.Errorf("could not print config: %v", err)
 		}
 	}
 
 	// Write proto if requested
 	if opt.output != "" {
-		b, err := c.MarshalBytes()
+		var b []byte
+		var err error
+		if opt.writeYAML {
+			b, err = marshallYAML(&c)
+		} else {
+			b, err = c.MarshalBytes()
+		}
 		if err == nil {
 			err = write(ctx, client, opt.output, b, opt.worldReadable)
 		}
@@ -204,8 +301,8 @@ func doOneshot(ctx context.Context, client *storage.Client, opt options, prowCon
 
 func main() {
 	// Parse flags
-	opt, err := gatherOptions()
-	if err != nil {
+	var opt options
+	if err := opt.gatherOptions(flag.CommandLine, os.Args[1:]); err != nil {
 		log.Fatalf("Bad flags: %v", err)
 	}
 
@@ -230,6 +327,7 @@ func main() {
 	// Setup GCS client
 	var client *storage.Client
 	if opt.output != "" {
+		var err error
 		client, err = gcs.ClientWithCreds(ctx, opt.creds)
 		if err != nil {
 			log.Fatalf("Failed to create storage client: %v", err)

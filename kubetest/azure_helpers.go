@@ -45,6 +45,8 @@ type Properties struct {
 	WindowsProfile          *WindowsProfile          `json:"windowsProfile,omitempty"`
 	ServicePrincipalProfile *ServicePrincipalProfile `json:"servicePrincipalProfile,omitempty"`
 	ExtensionProfiles       []map[string]string      `json:"extensionProfiles,omitempty"`
+	CustomCloudProfile      *CustomCloudProfile      `json:"customCloudProfile,omitempty"`
+	FeatureFlags            *FeatureFlags            `json:"featureFlags,omitempty"`
 }
 
 type ServicePrincipalProfile struct {
@@ -110,7 +112,11 @@ type KubernetesConfig struct {
 	CloudProviderRateLimitQPS    float64           `json:"cloudProviderRateLimitQPS,omitempty"`
 	CloudProviderRateLimitBucket int               `json:"cloudProviderRateLimitBucket,omitempty"`
 	APIServerConfig              map[string]string `json:"apiServerConfig,omitempty"`
+	KubernetesImageBase          string            `json:"kubernetesImageBase,omitempty"`
+	ControllerManagerConfig      map[string]string `json:"controllerManagerConfig,omitempty"`
+	KubeletConfig                map[string]string `json:"kubeletConfig,omitempty"`
 }
+
 type OrchestratorProfile struct {
 	OrchestratorType    string            `json:"orchestratorType"`
 	OrchestratorRelease string            `json:"orchestratorRelease"`
@@ -128,16 +134,17 @@ type MasterProfile struct {
 }
 
 type AgentPoolProfile struct {
-	Name                  string              `json:"name"`
-	Count                 int                 `json:"count"`
-	Distro                string              `json:"distro"`
-	VMSize                string              `json:"vmSize"`
-	OSType                string              `json:"osType,omitempty"`
-	AvailabilityProfile   string              `json:"availabilityProfile"`
-	IPAddressCount        int                 `json:"ipAddressCount,omitempty"`
-	PreProvisionExtension map[string]string   `json:"preProvisionExtension,omitempty"`
-	Extensions            []map[string]string `json:"extensions,omitempty"`
-	OSDiskSizeGB          int                 `json:"osDiskSizeGB,omitempty" validate:"min=0,max=1023"`
+	Name                   string              `json:"name"`
+	Count                  int                 `json:"count"`
+	Distro                 string              `json:"distro"`
+	VMSize                 string              `json:"vmSize"`
+	OSType                 string              `json:"osType,omitempty"`
+	AvailabilityProfile    string              `json:"availabilityProfile"`
+	IPAddressCount         int                 `json:"ipAddressCount,omitempty"`
+	PreProvisionExtension  map[string]string   `json:"preProvisionExtension,omitempty"`
+	Extensions             []map[string]string `json:"extensions,omitempty"`
+	OSDiskSizeGB           int                 `json:"osDiskSizeGB,omitempty" validate:"min=0,max=1023"`
+	EnableVMSSNodePublicIP bool                `json:"enableVMSSNodePublicIP,omitempty"`
 }
 
 type AzureClient struct {
@@ -145,6 +152,29 @@ type AzureClient struct {
 	subscriptionID    string
 	deploymentsClient resources.DeploymentsClient
 	groupsClient      resources.GroupsClient
+}
+
+type FeatureFlags struct {
+	EnableIPv6DualStack bool `json:"enableIPv6DualStack,omitempty"`
+}
+
+// CustomCloudProfile defines configuration for custom cloud profile( for ex: Azure Stack)
+type CustomCloudProfile struct {
+	PortalURL string `json:"portalURL,omitempty"`
+}
+
+// AzureStackMetadataEndpoints defines configuration for Azure Stack
+type AzureStackMetadataEndpoints struct {
+	GalleryEndpoint string                            `json:"galleryEndpoint,omitempty"`
+	GraphEndpoint   string                            `json:"graphEndpoint,omitempty"`
+	PortalEndpoint  string                            `json:"portalEndpoint,omitempty"`
+	Authentication  *AzureStackMetadataAuthentication `json:"authentication,omitempty"`
+}
+
+// AzureStackMetadataAuthentication defines configuration for Azure Stack
+type AzureStackMetadataAuthentication struct {
+	LoginEndpoint string   `json:"loginEndpoint,omitempty"`
+	Audiences     []string `json:"audiences,omitempty"`
 }
 
 func (az *AzureClient) ValidateDeployment(ctx context.Context, resourceGroupName, deploymentName string, template, params *map[string]interface{}) (valid resources.DeploymentValidateResult, err error) {

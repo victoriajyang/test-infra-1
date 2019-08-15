@@ -19,6 +19,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,8 @@ import (
 	"fmt"
 	"html/template"
 	"io/ioutil"
+	"k8s.io/test-infra/prow/plugins"
+	"k8s.io/test-infra/prow/plugins/trigger"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,6 +39,7 @@ import (
 
 	"cloud.google.com/go/storage"
 	"github.com/NYTimes/gziphandler"
+	"github.com/gorilla/csrf"
 	"github.com/gorilla/sessions"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
@@ -52,8 +56,10 @@ import (
 	prowapi "k8s.io/test-infra/prow/apis/prowjobs/v1"
 	prowv1 "k8s.io/test-infra/prow/client/clientset/versioned/typed/prowjobs/v1"
 	"k8s.io/test-infra/prow/config"
+	"k8s.io/test-infra/prow/config/secret"
 	"k8s.io/test-infra/prow/deck/jobs"
 	prowflagutil "k8s.io/test-infra/prow/flagutil"
+	prowgithub "k8s.io/test-infra/prow/github"
 	"k8s.io/test-infra/prow/githuboauth"
 	"k8s.io/test-infra/prow/kube"
 	"k8s.io/test-infra/prow/logrusutil"
@@ -77,6 +83,7 @@ type options struct {
 	jobConfigPath         string
 	buildCluster          string
 	kubernetes            prowflagutil.ExperimentalKubernetesOptions
+	github                prowflagutil.GitHubOptions
 	tideURL               string
 	hookURL               string
 	oauthURL              string
@@ -92,16 +99,34 @@ type options struct {
 	spyglassFilesLocation string
 	gcsCredentialsFile    string
 	rerunCreatesJob       bool
+	allowInsecure         bool
+	dryRun                bool
+	pluginConfig          string
 }
 
 func (o *options) Validate() error {
 	if err := o.kubernetes.Validate(false); err != nil {
 		return err
 	}
+	if err := o.github.Validate(o.dryRun); err != nil {
+		return err
+	}
 
 	if o.configPath == "" {
 		return errors.New("required flag --config-path was unset")
 	}
+
+	// TODO(Katharine): remove this handling after 2019-10-31
+	// We used to set a default value for --cookie-secret-file, but we also have code that
+	// assumes we don't. If it's not set, but it is required that it is, and a file exists
+	// at the old default, we set it back to that default and emit an error.
+	if o.cookieSecretFile == "" && o.oauthURL != "" {
+		if _, err := os.Stat("/etc/cookie/secret"); err == nil {
+			o.cookieSecretFile = "/etc/cookie/secret"
+			logrus.Error("You haven't set --cookie-secret-file, but you're assuming it is set to '/etc/cookie/secret'. Add --cookie-secret-file=/etc/cookie/secret to your deck instance's arguments. Your configuration will stop working at the end of October 2019.")
+		}
+	}
+
 	if o.oauthURL != "" {
 		if o.githubOAuthConfigFile == "" {
 			return errors.New("an OAuth URL was provided but required flag --github-oauth-config-file was unset")
@@ -125,7 +150,7 @@ func gatherOptions(fs *flag.FlagSet, args ...string) options {
 	fs.StringVar(&o.hookURL, "hook-url", "", "Path to hook plugin help endpoint.")
 	fs.StringVar(&o.oauthURL, "oauth-url", "", "Path to deck user dashboard endpoint.")
 	fs.StringVar(&o.githubOAuthConfigFile, "github-oauth-config-file", "/etc/github/secret", "Path to the file containing the GitHub App Client secret.")
-	fs.StringVar(&o.cookieSecretFile, "cookie-secret", "/etc/cookie/secret", "Path to the file containing the cookie secret key.")
+	fs.StringVar(&o.cookieSecretFile, "cookie-secret", "", "Path to the file containing the cookie secret key.")
 	// use when behind a load balancer
 	fs.StringVar(&o.redirectHTTPTo, "redirect-http-to", "", "Host to redirect http->https to based on x-forwarded-proto == http.")
 	// use when behind an oauth proxy
@@ -138,7 +163,11 @@ func gatherOptions(fs *flag.FlagSet, args ...string) options {
 	fs.StringVar(&o.templateFilesLocation, "template-files-location", "/template", "Path to the template files")
 	fs.StringVar(&o.gcsCredentialsFile, "gcs-credentials-file", "", "Path to the GCS credentials file")
 	fs.BoolVar(&o.rerunCreatesJob, "rerun-creates-job", false, "Change the re-run option in Deck to actually create the job. **WARNING:** Only use this with non-public deck instances, otherwise strangers can DOS your Prow instance")
+	fs.BoolVar(&o.allowInsecure, "allow-insecure", false, "Allows insecure requests for CSRF and GitHub oauth.")
+	fs.BoolVar(&o.dryRun, "dry-run", false, "Whether or not to make mutating API calls to GitHub.")
+	fs.StringVar(&o.pluginConfig, "plugin-config", "", "Path to plugin config file, probably /etc/plugins/plugins.yaml")
 	o.kubernetes.AddFlags(fs)
+	o.github.AddFlagsWithoutDefaultGitHubTokenPath(fs)
 	fs.Parse(args)
 	o.configPath = config.ConfigPath(o.configPath)
 	return o
@@ -171,6 +200,8 @@ var (
 		),
 	}
 )
+
+type authCfgGetter func() *prowapi.RerunAuthConfig
 
 type traceResponseWriter struct {
 	http.ResponseWriter
@@ -269,8 +300,6 @@ func main() {
 	mux.Handle("/tide-history", gziphandler.GzipHandler(handleSimpleTemplate(o, cfg, "tide-history.html", nil)))
 	mux.Handle("/plugins", gziphandler.GzipHandler(handleSimpleTemplate(o, cfg, "plugins.html", nil)))
 
-	indexHandler := handleSimpleTemplate(o, cfg, "index.html", struct{ SpyglassEnabled, ReRunCreatesJob bool }{o.spyglass, o.rerunCreatesJob})
-
 	runLocal := o.pregeneratedData != ""
 
 	var fallbackHandler func(http.ResponseWriter, *http.Request)
@@ -286,6 +315,14 @@ func main() {
 			fallbackHandler(w, r)
 			return
 		}
+		indexHandler := handleSimpleTemplate(o, cfg, "index.html", struct {
+			SpyglassEnabled bool
+			ReRunCreatesJob bool
+			AllowAnyone     bool
+		}{
+			SpyglassEnabled: o.spyglass,
+			ReRunCreatesJob: o.rerunCreatesJob,
+			AllowAnyone:     cfg().Deck.RerunAuthConfig.AllowAnyone})
 		indexHandler(w, r)
 	})
 
@@ -298,8 +335,50 @@ func main() {
 	// signal to the world that we're ready
 	health.ServeReady()
 
+	// cookie secret will be used for CSRF protection and should be exactly 32 bytes
+	// we sometimes accept different lengths to stay backwards compatible
+	var csrfToken []byte
+	if o.cookieSecretFile != "" {
+		cookieSecretRaw, err := loadToken(o.cookieSecretFile)
+		if err != nil {
+			logrus.WithError(err).Fatal("Could not read cookie secret file")
+		}
+		decodedSecret, err := base64.StdEncoding.DecodeString(string(cookieSecretRaw))
+		if err != nil {
+			logrus.WithError(err).Fatal("Error decoding cookie secret")
+		}
+		if len(decodedSecret) == 32 {
+			csrfToken = decodedSecret
+		}
+		if len(decodedSecret) > 32 {
+			logrus.Warning("Cookie secret should be exactly 32 bytes. Consider truncating the existing cookie to that length")
+			hash := sha256.Sum256(decodedSecret)
+			csrfToken = hash[:]
+		}
+		if len(decodedSecret) < 32 {
+			if o.rerunCreatesJob {
+				logrus.Fatal("Cookie secret must be exactly 32 bytes")
+				return
+			}
+			logrus.Warning("Cookie secret should be exactly 32 bytes")
+		}
+	}
+
+	// if we allow direct reruns, we must protect against CSRF in all post requests using the cookie secret as a token
+	// for more information about CSRF, see https://github.com/kubernetes/test-infra/blob/master/prow/cmd/deck/csrf.md
+	if o.rerunCreatesJob && csrfToken == nil && !cfg().Deck.RerunAuthConfig.AllowAnyone {
+		logrus.Fatal("Rerun creates job cannot be enabled without CSRF protection, which requires --cookie-secret to be exactly 32 bytes")
+		return
+	}
+
+	if csrfToken != nil {
+		CSRF := csrf.Protect(csrfToken, csrf.Path("/"), csrf.Secure(!o.allowInsecure))
+		logrus.WithError(http.ListenAndServe(":8080", CSRF(traceHandler(mux)))).Fatal("ListenAndServe returned.")
+		return
+	}
 	// setup done, actually start the server
 	logrus.WithError(http.ListenAndServe(":8080", traceHandler(mux))).Fatal("ListenAndServe returned.")
+
 }
 
 // localOnlyMain contains logic used only when running locally, and is mutually exclusive with
@@ -389,12 +468,14 @@ func prodOnlyMain(cfg config.Getter, o options, mux *http.ServeMux) *http.ServeM
 	}, podLogClients, cfg)
 	ja.Start()
 
+	cfgGetter := func() *prowapi.RerunAuthConfig { return &cfg().Deck.RerunAuthConfig }
+
 	// setup prod only handlers
 	mux.Handle("/data.js", gziphandler.GzipHandler(handleData(ja)))
 	mux.Handle("/prowjobs.js", gziphandler.GzipHandler(handleProwJobs(ja)))
 	mux.Handle("/badge.svg", gziphandler.GzipHandler(handleBadge(ja)))
 	mux.Handle("/log", gziphandler.GzipHandler(handleLog(ja)))
-	mux.Handle("/rerun", gziphandler.GzipHandler(handleRerun(prowJobClient, o.rerunCreatesJob)))
+
 	mux.Handle("/prowjob", gziphandler.GzipHandler(handleProwJob(prowJobClient)))
 
 	if o.spyglass {
@@ -422,7 +503,11 @@ func prodOnlyMain(cfg config.Getter, o options, mux *http.ServeMux) *http.ServeM
 		mux.Handle("/tide-history.js", gziphandler.GzipHandler(handleTideHistory(ta)))
 	}
 
+	var pluginAgent *plugins.ConfigAgent
+	// We use the GH client to resolve GH teams when determining who is permitted to rerun a job.
+	var githubClient prowgithub.RerunClient
 	// Enable Git OAuth feature if oauthURL is provided.
+	var goa *githuboauth.Agent
 	if o.oauthURL != "" {
 		githubOAuthConfigRaw, err := loadToken(o.githubOAuthConfigFile)
 		if err != nil {
@@ -452,7 +537,7 @@ func prodOnlyMain(cfg config.Getter, o options, mux *http.ServeMux) *http.ServeM
 		cookie := sessions.NewCookieStore(decodedSecret)
 		githubOAuthConfig.InitGitHubOAuthConfig(cookie)
 
-		goa := githuboauth.NewAgent(&githubOAuthConfig, logrus.WithField("client", "githuboauth"))
+		goa = githuboauth.NewAgent(&githubOAuthConfig, logrus.WithField("client", "githuboauth"))
 		oauthClient := githuboauth.NewClient(&oauth2.Config{
 			ClientID:     githubOAuthConfig.ClientID,
 			ClientSecret: githubOAuthConfig.ClientSecret,
@@ -461,6 +546,25 @@ func prodOnlyMain(cfg config.Getter, o options, mux *http.ServeMux) *http.ServeM
 			Endpoint:     github.Endpoint,
 		},
 		)
+
+		secretAgent := &secret.Agent{}
+		if o.github.TokenPath != "" {
+			if err := secretAgent.Start([]string{o.github.TokenPath}); err != nil {
+				logrus.WithError(err).Fatal("Error starting secrets agent.")
+			}
+			githubClient, err = o.github.GitHubClient(secretAgent, o.dryRun)
+			if err != nil {
+				logrus.WithError(err).Fatal("Error getting GitHub client.")
+			}
+			if o.pluginConfig != "" {
+				pluginAgent = &plugins.ConfigAgent{}
+				if err := pluginAgent.Load(o.pluginConfig); err != nil {
+					logrus.WithError(err).Fatal("Error loading Prow plugin config.")
+				}
+			} else {
+				logrus.Warning("No plugins configuration was provided to deck. You must provide one to reuse /test checks for rerun")
+			}
+		}
 
 		repoSet := make(map[string]bool)
 		for r := range cfg().Presubmits {
@@ -483,13 +587,17 @@ func prodOnlyMain(cfg config.Getter, o options, mux *http.ServeMux) *http.ServeM
 			&githubOAuthConfig,
 			logrus.WithField("client", "pr-status"))
 
+		secure := !o.allowInsecure
+
 		mux.Handle("/pr-data.js", handleNotCached(
 			prStatusAgent.HandlePrStatus(prStatusAgent)))
 		// Handles login request.
-		mux.Handle("/github-login", goa.HandleLogin(oauthClient))
+		mux.Handle("/github-login", goa.HandleLogin(oauthClient, secure))
 		// Handles redirect from GitHub OAuth server.
-		mux.Handle("/github-login/redirect", goa.HandleRedirect(oauthClient, githuboauth.NewGitHubClientGetter()))
+		mux.Handle("/github-login/redirect", goa.HandleRedirect(oauthClient, githuboauth.NewGitHubClientGetter(), secure))
 	}
+
+	mux.Handle("/rerun", gziphandler.GzipHandler(handleRerun(prowJobClient, o.rerunCreatesJob, cfgGetter, goa, githuboauth.NewGitHubClientGetter(), githubClient, pluginAgent)))
 
 	// optionally inject http->https redirect handler when behind loadbalancer
 	if o.redirectHTTPTo != "" {
@@ -718,7 +826,8 @@ func handleRequestJobViews(sg *spyglass.Spyglass, cfg config.Getter, o options) 
 		setHeadersNoCaching(w)
 		src := strings.TrimPrefix(r.URL.Path, "/view/")
 
-		page, err := renderSpyglass(sg, cfg, src, o)
+		csrfToken := csrf.Token(r)
+		page, err := renderSpyglass(sg, cfg, src, o, csrfToken)
 		if err != nil {
 			logrus.WithError(err).Error("error rendering spyglass page")
 			message := fmt.Sprintf("error rendering spyglass page: %v", err)
@@ -737,7 +846,7 @@ func handleRequestJobViews(sg *spyglass.Spyglass, cfg config.Getter, o options) 
 }
 
 // renderSpyglass returns a pre-rendered Spyglass page from the given source string
-func renderSpyglass(sg *spyglass.Spyglass, cfg config.Getter, src string, o options) (string, error) {
+func renderSpyglass(sg *spyglass.Spyglass, cfg config.Getter, src string, o options, csrfToken string) (string, error) {
 	renderStart := time.Now()
 
 	src = strings.TrimSuffix(src, "/")
@@ -840,6 +949,12 @@ lensesLoop:
 		return "", fmt.Errorf("error determining jobName / buildID: %v", err)
 	}
 
+	prLink := ""
+	j, err := sg.JobAgent.GetProwJob(jobName, buildID)
+	if err == nil && j.Spec.Refs != nil && len(j.Spec.Refs.Pulls) > 0 {
+		prLink = j.Spec.Refs.Pulls[0].Link
+	}
+
 	announcement := ""
 	if cfg().Deck.Spyglass.Announcement != "" {
 		announcementTmpl, err := template.New("announcement").Parse(cfg().Deck.Spyglass.Announcement)
@@ -887,6 +1002,7 @@ lensesLoop:
 		TestgridLink  string
 		JobName       string
 		BuildID       string
+		PRLink        string
 		ExtraLinks    []spyglass.ExtraLink
 	}
 	lTmpl := lensesTemplate{
@@ -902,11 +1018,12 @@ lensesLoop:
 		TestgridLink:  tgLink,
 		JobName:       jobName,
 		BuildID:       buildID,
+		PRLink:        prLink,
 		ExtraLinks:    extraLinks,
 	}
 	t := template.New("spyglass.html")
 
-	if _, err := prepareBaseTemplate(o, cfg, t); err != nil {
+	if _, err := prepareBaseTemplate(o, cfg, csrfToken, t); err != nil {
 		return "", fmt.Errorf("error preparing base template: %v", err)
 	}
 	t, err = t.ParseFiles(path.Join(o.templateFilesLocation, "spyglass.html"))
@@ -1090,7 +1207,8 @@ func handleLog(lc logClient) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("Log not found: %v", err), http.StatusNotFound)
 			logger := logger.WithError(err)
 			msg := "Log not found."
-			if strings.Contains(err.Error(), "PodInitializing") || strings.Contains(err.Error(), "not found") {
+			if strings.Contains(err.Error(), "PodInitializing") || strings.Contains(err.Error(), "not found") ||
+				strings.Contains(err.Error(), "terminated") {
 				// PodInitializing is really common and not something
 				// that has any actionable items for administrators
 				// monitoring logs, so we should log it as information.
@@ -1150,9 +1268,64 @@ func handleProwJob(prowJobClient prowv1.ProwJobInterface) http.HandlerFunc {
 	}
 }
 
-func handleRerun(prowJobClient prowv1.ProwJobInterface, createProwJob bool) http.HandlerFunc {
+// canTriggerJob determines whether the given user can trigger any job.
+func canTriggerJob(user string, pj prowapi.ProwJob, cfg *prowapi.RerunAuthConfig, cli prowgithub.RerunClient, pluginAgent *plugins.ConfigAgent) (bool, error) {
+	auth, err := cfg.IsAuthorized(user, cli)
+	if auth {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	jobPermissions := pj.Spec.RerunAuthConfig
+	auth, err = jobPermissions.IsAuthorized(user, cli)
+	if auth {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if cli == nil {
+		logrus.Warning("No GitHub token was provided, so we cannot retrieve GitHub teams")
+		return false, nil
+	}
+
+	// If the job is a presubmit and has an associated PR, do the same checks as for /test
+	if pj.Spec.Type == prowapi.PresubmitJob && pj.Spec.Refs != nil && len(pj.Spec.Refs.Pulls) > 0 {
+		if pluginAgent == nil {
+			// If no plugins configuration is provided, skip the checks
+			return false, nil
+		}
+		pcfg := pluginAgent.Config()
+		pull := pj.Spec.Refs.Pulls[0]
+		org := pj.Spec.Refs.Org
+		repo := pj.Spec.Refs.Repo
+		_, allowed, err := trigger.TrustedPullRequest(cli, pcfg.TriggerFor(org, repo), pull.Author, org, repo, pull.Number, nil)
+		return allowed, err
+	}
+	return false, nil
+}
+
+func marshalJob(w http.ResponseWriter, pj prowapi.ProwJob, l *logrus.Entry) {
+	b, err := yaml.Marshal(&pj)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error marshaling: %v", err), http.StatusInternalServerError)
+		l.WithError(err).Error("Error marshaling job.")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	if _, err := w.Write(b); err != nil {
+		l.WithError(err).Error("Error writing log.")
+	}
+}
+
+// handleRerun triggers a rerun of the given job if that features is enabled, it receives a
+// POST request, and the user has the necessary permissions. Otherwise, it writes the config
+// for a new job but does not trigger it.
+func handleRerun(prowJobClient prowv1.ProwJobInterface, createProwJob bool, cfg authCfgGetter, goa *githuboauth.Agent, ghc githuboauth.GitHubClientGetter, cli prowgithub.RerunClient, pluginAgent *plugins.ConfigAgent) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("prowjob")
+		l := logrus.WithField("prowjob", name)
 		if name == "" {
 			http.Error(w, "request did not provide the 'name' query parameter", http.StatusBadRequest)
 			return
@@ -1162,38 +1335,69 @@ func handleRerun(prowJobClient prowv1.ProwJobInterface, createProwJob bool) http
 			http.Error(w, fmt.Sprintf("ProwJob not found: %v", err), http.StatusNotFound)
 			if !kerrors.IsNotFound(err) {
 				// admins only care about errors other than not found
-				logrus.WithError(err).Warning("ProwJob not found.")
+				l.WithError(err).Warning("ProwJob not found.")
 			}
 			return
 		}
 		newPJ := pjutil.NewProwJob(pj.Spec, pj.ObjectMeta.Labels, pj.ObjectMeta.Annotations)
-		// Be very careful about this on publicly accessible Prow instances. Even after we have authentication
-		// for the handler, we need CSRF protection.
-		// On Prow instances that require auth even for viewing Deck this is okayish, because the Prowjob UUID
-		// is hard to guess
-		// Ref: https://github.com/kubernetes/test-infra/pull/12827#issuecomment-502850414
-		if createProwJob {
-			if r.Method != http.MethodPost {
-				http.Error(w, "request must be of type POST", http.StatusMethodNotAllowed)
+		switch r.Method {
+		case http.MethodGet:
+			marshalJob(w, newPJ, l)
+		case http.MethodPost:
+			if !createProwJob {
+				http.Error(w, "Direct rerun feature is not enabled. Enable with the '--rerun-creates-job' flag.", http.StatusMethodNotAllowed)
+				return
+			}
+			authConfig := cfg()
+			var allowed bool
+			if authConfig.AllowAnyone || pj.Spec.RerunAuthConfig.AllowAnyone {
+				// Skip getting the users login via GH oauth if anyone is allowed to rerun
+				// jobs so that GH oauth doesn't need to be set up for private Prows.
+				allowed = true
+			} else {
+				if goa == nil {
+					msg := "GitHub oauth must be configured to rerun jobs unless 'allow_anyone: true' is specified."
+					http.Error(w, msg, http.StatusInternalServerError)
+					l.Error(msg)
+					return
+				}
+				login, err := goa.GetLogin(r, ghc)
+				if err != nil {
+					l.WithError(err).Errorf("Error retrieving GitHub login")
+					http.Error(w, "Error retrieving GitHub login", http.StatusUnauthorized)
+					return
+				}
+				allowed, err = canTriggerJob(login, newPJ, authConfig, cli, pluginAgent)
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Error checking if user can trigger job: %v", err), http.StatusInternalServerError)
+					l.WithError(err).Errorf("Error checking if user can trigger job")
+					return
+				}
+				logrus.WithFields(logrus.Fields{
+					"user":    login,
+					"job":     newPJ.Spec.Job,
+					"allowed": allowed,
+				}).Info("Attempted rerun")
+			}
+
+			if !allowed {
+				if _, err = w.Write([]byte("You don't have permission to rerun that job")); err != nil {
+					l.WithError(err).Error("Error writing to rerun response.")
+				}
 				return
 			}
 			if _, err := prowJobClient.Create(&newPJ); err != nil {
-				logrus.WithError(err).Error("Error creating job")
+				l.WithError(err).Error("Error creating job")
 				http.Error(w, fmt.Sprintf("Error creating job: %v", err), http.StatusInternalServerError)
 				return
 			}
-			w.WriteHeader(http.StatusNoContent)
+			if _, err = w.Write([]byte("Job successfully triggered. Wait 30 seconds and refresh the page for the job to show up")); err != nil {
+				l.WithError(err).Error("Error writing to rerun response.")
+			}
 			return
-		}
-		b, err := yaml.Marshal(&newPJ)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Error marshaling: %v", err), http.StatusInternalServerError)
-			logrus.WithError(err).Error("Error marshaling jobs.")
+		default:
+			http.Error(w, fmt.Sprintf("bad verb %v", r.Method), http.StatusMethodNotAllowed)
 			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if _, err := w.Write(b); err != nil {
-			logrus.WithError(err).Error("Error writing log.")
 		}
 	}
 }
@@ -1209,7 +1413,7 @@ func handleConfig(cfg config.Getter) http.HandlerFunc {
 			http.Error(w, "Failed to marhshal config.", http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/x-yaml")
+		w.Header().Set("Content-Type", "text/plain")
 		buff := bytes.NewBuffer(b)
 		_, err = buff.WriteTo(w)
 		if err != nil {

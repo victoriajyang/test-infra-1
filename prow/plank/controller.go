@@ -18,6 +18,7 @@ package plank
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,11 @@ import (
 	"k8s.io/test-infra/prow/kube"
 	"k8s.io/test-infra/prow/pjutil"
 	"k8s.io/test-infra/prow/pod-utils/decorate"
+)
+
+// PodStatus constants
+const (
+	Evicted = "Evicted"
 )
 
 type kubeClient interface {
@@ -203,7 +209,7 @@ func (c *Controller) Sync() error {
 		selector = strings.Join([]string{c.selector, selector}, ",")
 	}
 
-	pm := map[string]kube.Pod{}
+	pm := map[string]v1.Pod{}
 	for alias, client := range c.pkcs {
 		pods, err := client.ListPods(selector)
 		if err != nil {
@@ -222,6 +228,10 @@ func (c *Controller) Sync() error {
 		}
 	}
 	pjs = k8sJobs
+	// Sort jobs so jobs started earlier get better chance picked up earlier
+	sort.Slice(pjs, func(i, j int) bool {
+		return pjs[i].CreationTimestamp.Before(&pjs[j].CreationTimestamp)
+	})
 
 	var syncErrs []error
 	if err := c.terminateDupes(pjs, pm); err != nil {
@@ -380,7 +390,7 @@ func (c *Controller) syncPendingJob(pj prowapi.ProwJob, pm map[string]coreapi.Po
 			pj.Status.Description = "Job succeeded."
 
 		case coreapi.PodFailed:
-			if pod.Status.Reason == kube.Evicted {
+			if pod.Status.Reason == Evicted {
 				// Pod was evicted.
 				if pj.Spec.ErrorOnEviction {
 					// ErrorOnEviction is enabled, complete the PJ and mark it as errored.
